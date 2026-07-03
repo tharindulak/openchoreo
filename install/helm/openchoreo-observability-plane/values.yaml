@@ -1273,7 +1273,7 @@ rca:
   # description: Enable RCA agent deployment
   # default: false
   # @schema
-  enabled: false
+  enabled: true
 
   # @schema
   # type: string
@@ -1433,7 +1433,7 @@ rca:
     # description: LLM model name (e.g., gpt-5.2)
     # default: ""
     # @schema
-    modelName: ""
+    modelName: "anthropic:claude-sonnet-4-6"
 
 
   # @schema

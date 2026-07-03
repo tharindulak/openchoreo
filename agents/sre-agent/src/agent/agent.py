@@ -11,7 +11,11 @@ from typing import Any
 import httpx
 from langchain.agents import create_agent
 from langchain.agents.middleware import SummarizationMiddleware, TodoListMiddleware
-from langchain.agents.structured_output import ProviderStrategy, StructuredOutputValidationError
+from langchain.agents.structured_output import (
+    ProviderStrategy,
+    StructuredOutputValidationError,
+    ToolStrategy,
+)
 from langchain_core.callbacks import BaseCallbackHandler, UsageMetadataCallbackHandler
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
@@ -98,12 +102,21 @@ class Agent:
 
         logging_mw = next((m for m in middleware if isinstance(m, LoggingMiddleware)), None)
 
+        # Anthropic and Gemini reject native strict structured output combined
+        # with many tools (grammar-too-large / unsupported response_mime_type),
+        # so use tool-based structured output for them. OpenAI keeps ProviderStrategy.
+        provider = settings.rca_model_name.split(":", 1)[0]
+        if provider in ("anthropic",):
+            output_strategy = ToolStrategy(self.response_format)
+        else:
+            output_strategy = ProviderStrategy(self.response_format)
+
         agent = create_agent(
             model=self.model,
             tools=tools,
             system_prompt=render(self.template, template_context),
             middleware=middleware,
-            response_format=ProviderStrategy(self.response_format),
+            response_format=output_strategy,
         )
 
         runnable_config: RunnableConfig = {"recursion_limit": self.recursion_limit}
