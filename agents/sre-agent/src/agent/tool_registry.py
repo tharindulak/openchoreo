@@ -24,6 +24,7 @@ class Tool(str):
 
 OBSERVABILITY = "observability"
 OPENCHOREO = "openchoreo"
+AE = "ae"
 
 
 class TOOLS:
@@ -95,6 +96,21 @@ class TOOLS:
         server=OPENCHOREO,
         active_form="Fetching trait schema...",
     )
+    AE_SEARCH_RELATED_ISSUES = Tool(
+        "ae_search_related_issues",
+        server=AE,
+        active_form="Searching related issues...",
+    )
+    AE_CREATE_ISSUE = Tool(
+        "ae_create_issue",
+        server=AE,
+        active_form="Creating GitHub issue...",
+    )
+    AE_DISPATCH_CODING_AGENT = Tool(
+        "ae_dispatch_coding_agent",
+        server=AE,
+        active_form="Dispatching coding agent...",
+    )
 
 
 _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]
@@ -102,6 +118,7 @@ _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]
 # Tool names grouped by server
 OBSERVABILITY_TOOLS = {t for t in _ALL if t.server == OBSERVABILITY}
 OPENCHOREO_TOOLS = {t for t in _ALL if t.server == OPENCHOREO}
+AE_TOOLS = {t for t in _ALL if t.server == AE}
 
 # Active forms for streaming UI
 TOOL_ACTIVE_FORMS: dict[str, str] = {

@@ -40,13 +40,21 @@ class MCPClient:
             "auth": auth,
         }
 
-        self._client = MultiServerMCPClient(
-            {
-                "observability": obs_connection,
-                "openchoreo": oc_connection,
+        connections: dict[str, StreamableHttpConnection] = {
+            "observability": obs_connection,
+            "openchoreo": oc_connection,
+        }
+
+        if settings.ae_handoff:
+            connections["ae"] = {
+                "transport": "streamable_http",
+                "url": settings.ae_mcp_url,
+                "httpx_client_factory": _httpx_client_factory,
+                "auth": auth,
             }
-        )
-        logger.debug("Initialized MCP client with servers: observability, openchoreo")
+
+        self._client = MultiServerMCPClient(connections)
+        logger.debug("Initialized MCP client with servers: %s", list(connections))
 
     async def get_tools(self) -> list[BaseTool]:
         try:

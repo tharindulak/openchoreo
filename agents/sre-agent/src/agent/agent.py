@@ -28,6 +28,7 @@ from src.agent.middleware import (
 )
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
+    AE_TOOLS,
     ALL_TOOL_FACTORIES,
     OBSERVABILITY_TOOLS,
     OPENCHOREO_TOOLS,
@@ -40,7 +41,7 @@ from src.clients import MCPClient, get_model, get_report_backend
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
-from src.models import ChatResponse, RCAReport
+from src.models import ChatResponse, HandoffResult, RCAReport
 from src.models.rca_report import RootCauseIdentified
 from src.models.remediation_result import RemediationResult
 from src.template_manager import render
@@ -92,6 +93,7 @@ class Agent:
             "tools": tools,
             "observability_tools": [t for t in tools if t.name in OBSERVABILITY_TOOLS],
             "openchoreo_tools": [t for t in tools if t.name in OPENCHOREO_TOOLS],
+            "ae_tools": [t for t in tools if t.name in AE_TOOLS],
         }
         if context:
             template_context.update(context)
@@ -157,6 +159,21 @@ REMED_AGENT = Agent(
         ToolErrorHandlerMiddleware,
     ],
     response_format=RemediationResult,
+    recursion_limit=50,
+)
+
+HANDOFF_AGENT = Agent(
+    template="prompts/handoff_agent_prompt.j2",
+    tools={
+        TOOLS.AE_SEARCH_RELATED_ISSUES,
+        TOOLS.AE_CREATE_ISSUE,
+        TOOLS.AE_DISPATCH_CODING_AGENT,
+    },
+    middleware=[
+        LoggingMiddleware,
+        ToolErrorHandlerMiddleware,
+    ],
+    response_format=HandoffResult,
     recursion_limit=50,
 )
 
@@ -358,6 +375,46 @@ async def run_analysis(
                     logger.info("Remediation completed: usage=%s", usage_callback.usage_metadata)
                 except Exception as e:
                     logger.error("Remediation agent failed, saving RCA report without it: %s", e)
+
+            if settings.ae_handoff and isinstance(rca_report.result, RootCauseIdentified):
+                try:
+                    logger.info("Running handoff agent")
+                    handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
+                        auth=get_oauth2_auth(),
+                        usage_callback=usage_callback,
+                        context={"scope": scope, "auto_dispatch": settings.ae_auto_dispatch},
+                    )
+
+                    handoff_result_raw = await asyncio.wait_for(
+                        handoff_agent.ainvoke(
+                            {
+                                "messages": [
+                                    {
+                                        "role": "user",
+                                        # report_data reflects the remediation-revised
+                                        # actions (status/change) when the remediation
+                                        # agent ran — that's the config-vs-code signal
+                                        # the handoff agent classifies on.
+                                        "content": json.dumps(report_data),
+                                    }
+                                ],
+                            }
+                        ),
+                        timeout=settings.analysis_timeout_seconds,
+                    )
+
+                    handoff_report: HandoffResult = handoff_result_raw["structured_response"]
+                    if handoff_logging and (summary := handoff_logging.tool_call_summary()):
+                        logger.debug("Handoff tool calls: %s", summary)
+                    report_data["handoff"] = handoff_report.model_dump()
+                    logger.info(
+                        "Handoff completed: classification=%s, issue=%s, dispatch=%s",
+                        handoff_report.classification,
+                        handoff_report.created_issue_url,
+                        handoff_report.dispatch_run_name,
+                    )
+                except Exception as e:
+                    logger.error("Handoff agent failed, saving RCA report without it: %s", e)
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,

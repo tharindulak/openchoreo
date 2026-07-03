@@ -20,6 +20,7 @@ class Settings(BaseSettings):
 
     observer_api_url: str = "http://observer:8080"
     openchoreo_api_url: str = "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"
+    ae_api_url: str = ""
 
     @property
     def observer_mcp_url(self) -> str:
@@ -28,6 +29,10 @@ class Settings(BaseSettings):
     @property
     def openchoreo_mcp_url(self) -> str:
         return f"{self.openchoreo_api_url.rstrip('/')}/mcp"
+
+    @property
+    def ae_mcp_url(self) -> str:
+        return f"{self.ae_api_url.rstrip('/')}/mcp"
 
     report_backend: str = "sqlite"
     sql_backend_uri: str = ""
@@ -50,6 +55,8 @@ class Settings(BaseSettings):
     max_concurrent_analyses: int = 5
     analysis_timeout_seconds: int = 1500
     remed_agent: bool = False
+    ae_handoff: bool = False
+    ae_auto_dispatch: bool = True
 
     log_level: str = "INFO"
     openai_debug_logs: bool = False
@@ -66,6 +73,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"sql_backend_uri scheme must match report_backend='{self.report_backend}'"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ae_handoff_config(self) -> Settings:
+        if self.ae_handoff and not self.ae_api_url:
+            raise ValueError("ae_handoff=True requires: ae_api_url")
         return self
 
 

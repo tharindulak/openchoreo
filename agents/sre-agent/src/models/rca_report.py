@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Discriminator, Field
 
+from src.models.handoff_result import HandoffResult
+
 
 class ConfidenceLevel(StrEnum):
     """Confidence level in root cause determination"""
@@ -290,4 +292,9 @@ class RCAReport(BaseModel):
         ...,
         min_length=1,
         description="Sequential steps the agent took during investigation",
+    )
+
+    handoff: HandoffResult | None = Field(
+        default=None,
+        description="AE coding-agent handoff outcome, if the handoff stage ran",
     )
