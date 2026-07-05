@@ -148,14 +148,34 @@ kubectl exec -n openchoreo-observability-plane opensearch-master-0 -c opensearch
 # expect one monitor per rule, enabled: true, with your interval + a trigger/action
 ```
 
-### ⚠️ Index‑mapping trap: rule matches 0 docs forever on pre‑existing indices
+### ⚠️ Index‑mapping trap: rule matches 0 docs forever on wrongly‑mapped indices
 
-The adapter's monitor scopes by `term` queries on
-`kubernetes.labels.openchoreo_dev/{component,project,environment}-uid`. Those only work when
-the fields are mapped **`keyword`** — which the ≥0.5.x module's `container-logs` index template
-provides. **Daily indices created before the module upgrade** have the labels dynamically mapped
-as `text`, so the term query on the full UID never matches (UIDs tokenise on hyphens) — the
-monitor silently evaluates to 0 hits forever. Existing indices cannot be remapped.
+The adapter's monitor needs TWO mapping guarantees, both provided by the ≥0.5.x module's
+`container-logs` index template:
+
+1. **Labels as `keyword`** — the monitor scopes by `term` queries on
+   `kubernetes.labels.openchoreo_dev/{component,project,environment}-uid`. On a `text`‑mapped
+   label the UID tokenises on hyphens and the exact‑match term never hits.
+2. **`log` as the `wildcard` field type** — the rule's `query: "<phrase>"` becomes a
+   `wildcard: *<phrase>*` query. Wildcard patterns are **not analysed**: against a `text`
+   field they compare with the lowercase tokens, so an uppercase phrase like `ERROR` can
+   never match. Against `wildcard` they compare with the raw line — correct.
+
+Two ways to end up wrong, both with the same silent‑zero‑hits signature while everything
+reports healthy (`Synced: True`, monitor enabled, logs indexed):
+
+- **Daily indices created before the module upgrade** — dynamic/text mappings.
+- **A custom index template with the SAME NAME (`container-logs`)** — a PUT with the same
+  name silently REPLACES the chart's template (this is how a legacy bootstrap job broke
+  `log` back to `text` on fresh installs until 2026‑07‑05; the chart's setup hook must own
+  this template).
+
+Existing indices cannot be remapped. Verify the template first:
+```bash
+# expect "log":{"type":"wildcard"} and the openchoreo_dev/* labels as keyword
+kubectl exec -n openchoreo-observability-plane opensearch-master-0 -c opensearch -- \
+  curl -sk -u "admin:<pw>" "https://localhost:9200/_index_template/container-logs"
+```
 
 Fix for the current day (local/dev — deletes that day's logs, regenerable):
 ```bash
@@ -278,6 +298,7 @@ Then hard‑reload the portal → the report appears for the component.
 | Portal: "AI RCA is not configured" | `rcaAgentURL` unset on the plane resource | §4 |
 | Auto‑trigger never fires | No `ObservabilityAlertRule`, or `AI_RCA_ENABLED` false, or rule missing `incident.enabled`/`triggerAiRca` | §3, §5 |
 | Rule is `Ready`/`Synced: True` but **never fires**, even with matching logs in the pod | **No logs‑adapter deployed** (module chart 0.3.x has none) and/or `LOGS_ADAPTER_ENABLED=false` — rules are stored but never evaluated | §3b |
+| Adapter/monitor exist and logs are indexed, but the monitor matches **0 docs forever** | Wrong index mappings: labels/`pod_name` as `text` (UID `term` misses) or `log` as `text` instead of `wildcard` (the `*phrase*` pattern can't match analysed lowercase tokens). Often caused by a same‑name custom template clobbering the chart's | §3b — verify the template, delete wrongly‑mapped indices |
 | Alert fires but agent never receives `/analyze` | `RCA_SERVICE_URL` empty in `observer-config` | §3 |
 | `helm upgrade` of the logs module fails with `nil pointer …image.repository`, or adapter silently absent after upgrade | `--reuse-values` across chart versions drops new defaults (`adapter.enabled`, `adapter.image.*`) | §3b — pass a full values file |
 | Rule stops firing after an **observer restart** | Observer's alert store is **ephemeral sqlite** (`ALERT_STORE_BACKEND=sqlite`) — a restart wipes it, and the controller won't re‑push (`observedGeneration` unchanged ⇒ "unchanged in backend"). Annotations do NOT trigger re‑sync | Force a spec change on each rule, e.g. `kubectl patch observabilityalertrule <rule> -n default --type=merge -p '{"spec":{"description":"…resynced"}}'` — expect `Synced` message to flip to "updated in backend" |
