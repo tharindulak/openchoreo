@@ -16,7 +16,13 @@ class Settings(BaseSettings):
     )
 
     rca_model_name: str = ""
+    # Static fallback — read once at process start. Prefer
+    # rca_llm_api_key_file when set: it points at a K8s Secret volume mount
+    # kept live-synced (via ExternalSecret from OpenBao) with the org's
+    # Anthropic key as set through the AE console, so rotations take effect
+    # without restarting this pod. See src/clients/llm.py:resolve_api_key.
     rca_llm_api_key: str = ""
+    rca_llm_api_key_file: str = ""
 
     observer_api_url: str = "http://observer:8080"
     openchoreo_api_url: str = "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"

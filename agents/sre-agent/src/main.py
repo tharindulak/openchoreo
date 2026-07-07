@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from src.api import agent_router, report_router
 from src.auth import check_oauth2_connection, get_oauth2_auth
 from src.auth.dependencies import _load_auth_config
-from src.clients import MCPClient, get_model, get_report_backend
+from src.clients import MCPClient, get_model, get_report_backend, resolve_api_key
 from src.config import settings
 from src.logging_config import setup_logging
 from src.mcp_server import drain_background_tasks, make_mcp_app, mcp_server
@@ -27,13 +27,34 @@ if settings.tls_insecure_skip_verify:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("Starting up: Testing LLM connection...")
-    try:
-        model = get_model()
-        test_response = await model.ainvoke("Hello")
-        logger.info("LLM test successful: %s", test_response.content[:50])
-    except Exception as e:
-        logger.error("LLM initialization failed: %s", e)
-        raise RuntimeError(f"LLM initialization failed: {e}") from e
+    # Match Agent.create()'s resolution (src/agent/agent.py) — resolve_api_key()
+    # prefers the console/OpenBao-backed file over the static env var.
+    api_key = resolve_api_key()
+    if not api_key:
+        # No key from EITHER source is a "not configured yet" state, not a
+        # misconfiguration: an org may connect its Anthropic key via the AE
+        # console any time after this pod starts, and resolve_api_key() picks
+        # it up on the very next /analyze or /chat call with no restart —
+        # see Agent.create(). Crash-looping the whole pod over a key that
+        # simply hasn't been set YET would defeat that: it forces "restart
+        # after connecting" back in as a manual step. Warn loudly and let the
+        # process come up; real requests fail clearly until a key exists.
+        logger.warning(
+            "No Anthropic API key configured (RCA_LLM_API_KEY_FILE unset/empty and "
+            "RCA_LLM_API_KEY unset) — skipping the startup LLM test. The agent will "
+            "start, but /analyze and /chat will fail until a key is connected via "
+            "the AE console or RCA_LLM_API_KEY is set; no restart needed once one is."
+        )
+    else:
+        # A key IS configured — a failure here is a genuine misconfiguration
+        # (wrong key, bad model name, network issue), so this stays fail-fast.
+        try:
+            model = get_model(model_name=settings.rca_model_name, api_key=api_key)
+            test_response = await model.ainvoke("Hello")
+            logger.info("LLM test successful: %s", test_response.content[:50])
+        except Exception as e:
+            logger.error("LLM initialization failed: %s", e)
+            raise RuntimeError(f"LLM initialization failed: {e}") from e
 
     logger.info("Initializing report backend...")
     try:

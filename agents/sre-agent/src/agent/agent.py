@@ -37,7 +37,7 @@ from src.agent.tool_registry import (
 )
 from src.auth.bearer import BearerTokenAuth
 from src.auth.oauth_client import get_oauth2_auth
-from src.clients import MCPClient, get_model, get_report_backend
+from src.clients import MCPClient, get_model, get_report_backend, resolve_api_key
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
@@ -65,7 +65,6 @@ class Agent:
         self.tools = tools
         self.response_format = response_format
         self.recursion_limit = recursion_limit
-        self.model = get_model()
         self._middleware_classes = middleware
         self._use_summarization = use_summarization
         self._tool_factories = tool_factories or []
@@ -76,6 +75,10 @@ class Agent:
         usage_callback: BaseCallbackHandler | None = None,
         context: dict[str, Any] | None = None,
     ) -> tuple[Runnable, LoggingMiddleware | None]:
+        # Resolved fresh on every call (not cached on self) so a key rotated
+        # via the AE console — synced by ESO into RCA_LLM_API_KEY_FILE — takes
+        # effect on the next analysis/chat request without a pod restart.
+        model = get_model(model_name=settings.rca_model_name, api_key=resolve_api_key())
         tools: list[BaseTool] = []
 
         if self.tools:
@@ -100,7 +103,7 @@ class Agent:
 
         middleware = [m() for m in self._middleware_classes]
         if self._use_summarization:
-            middleware.append(SummarizationMiddleware(model=self.model, trigger=("fraction", 0.8)))
+            middleware.append(SummarizationMiddleware(model=model, trigger=("fraction", 0.8)))
 
         logging_mw = next((m for m in middleware if isinstance(m, LoggingMiddleware)), None)
 
@@ -114,7 +117,7 @@ class Agent:
             output_strategy = ProviderStrategy(self.response_format)
 
         agent = create_agent(
-            model=self.model,
+            model=model,
             tools=tools,
             system_prompt=render(self.template, template_context),
             middleware=middleware,
