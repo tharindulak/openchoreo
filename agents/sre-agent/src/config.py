@@ -54,6 +54,19 @@ class Settings(BaseSettings):
 
     max_concurrent_analyses: int = 5
     analysis_timeout_seconds: int = 1500
+    # Per-LLM-request cap (seconds) and retry count. Without these the
+    # Anthropic SDK defaults apply (~600s/request), so one stalled request
+    # can wedge an analysis for ~10min before failing. A short per-request
+    # timeout + retries fails fast on a hung request and recovers on the
+    # next attempt instead of stalling the whole run.
+    llm_request_timeout_seconds: int = 120
+    llm_max_retries: int = 2
+    # MCP get_tools() retry: opening connections to all MCP servers is a single
+    # task-group call that fails whole if any one server is transiently slow
+    # (CPU-starved node, OAuth fetch timeout). Retrying rescued handoff runs
+    # that used to die outright when one server flaked.
+    mcp_get_tools_max_retries: int = 3
+    mcp_get_tools_retry_backoff_seconds: float = 2.0
     remed_agent: bool = False
     ae_handoff: bool = False
     ae_auto_dispatch: bool = True

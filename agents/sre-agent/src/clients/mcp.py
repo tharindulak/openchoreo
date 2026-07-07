@@ -1,6 +1,7 @@
 # Copyright 2025 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import logging
 
 import httpx
@@ -57,10 +58,35 @@ class MCPClient:
         logger.debug("Initialized MCP client with servers: %s", list(connections))
 
     async def get_tools(self) -> list[BaseTool]:
-        try:
-            tools = await self._client.get_tools()
-        except Exception as e:
-            logger.error("Failed to fetch tools from MCP client: %s", e, exc_info=True)
-            raise RuntimeError(f"Failed to fetch tools from MCP client: {e}") from e
+        # Retry with exponential backoff: get_tools() opens fresh connections
+        # to all configured MCP servers in a task group, so a single transient
+        # failure (a server slow under load, an OAuth token fetch timing out on
+        # a CPU-starved node) fails the whole call. Without a retry that killed
+        # entire handoff runs — no issue, no dispatch — even though the very
+        # next attempt would have succeeded. Retry the whole call so one flaky
+        # server doesn't abort the run.
+        attempts = max(1, settings.mcp_get_tools_max_retries)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._client.get_tools()
+            except Exception as e:  # noqa: BLE001 — retry any connection/task-group error
+                last_exc = e
+                if attempt < attempts:
+                    backoff = settings.mcp_get_tools_retry_backoff_seconds * attempt
+                    logger.warning(
+                        "MCP get_tools failed (attempt %d/%d), retrying in %.1fs: %s",
+                        attempt,
+                        attempts,
+                        backoff,
+                        e,
+                    )
+                    await asyncio.sleep(backoff)
 
-        return tools
+        logger.error(
+            "Failed to fetch tools from MCP client after %d attempts: %s",
+            attempts,
+            last_exc,
+            exc_info=True,
+        )
+        raise RuntimeError(f"Failed to fetch tools from MCP client: {last_exc}") from last_exc
