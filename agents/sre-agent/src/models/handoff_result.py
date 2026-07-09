@@ -36,6 +36,13 @@ class HandoffResult(BaseModel):
         default_factory=list,
         description="Existing GitHub issues found related to this root cause",
     )
+    deduped: bool = Field(
+        default=False,
+        description=(
+            "True if ae_create_issue deduped onto an already-open issue this run "
+            "rather than creating a new one"
+        ),
+    )
     created_issue_number: int | None = Field(
         default=None, description="Number of the GitHub issue created for the code-level fix"
     )

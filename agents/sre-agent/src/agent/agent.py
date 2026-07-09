@@ -21,11 +21,17 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from src.agent.handoff_logic import (
+    build_shortcut_result,
+    classify_handoff_shortcut,
+    wrap_ae_tools_for_handoff,
+)
 from src.agent.middleware import (
     LoggingMiddleware,
     OutputTransformerMiddleware,
     ToolErrorHandlerMiddleware,
 )
+from src.agent.skills import create_load_skill_tool, load_skills
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
     AE_TOOLS,
@@ -60,6 +66,7 @@ class Agent:
         recursion_limit: int,
         use_summarization: bool = False,
         tool_factories: list[Callable[..., BaseTool]] | None = None,
+        skills: set[str] | None = None,
     ):
         self.template = template
         self.tools = tools
@@ -68,6 +75,7 @@ class Agent:
         self._middleware_classes = middleware
         self._use_summarization = use_summarization
         self._tool_factories = tool_factories or []
+        self._skills = skills or set()
 
     async def create(
         self,
@@ -90,6 +98,15 @@ class Agent:
         for factory in self._tool_factories:
             tools.append(factory(auth))
 
+        scope = context.get("scope") if context else None
+        if scope is not None and TOOLS.AE_CREATE_ISSUE in {t.name for t in tools}:
+            tools = wrap_ae_tools_for_handoff(tools, scope)
+
+        skills_catalog = []
+        if self._skills:
+            skills_catalog = load_skills(self._skills)
+            tools.append(create_load_skill_tool(skills_catalog))
+
         logger.debug("Total tools: %d — %s", len(tools), [t.name for t in tools])
 
         template_context = {
@@ -97,6 +114,7 @@ class Agent:
             "observability_tools": [t for t in tools if t.name in OBSERVABILITY_TOOLS],
             "openchoreo_tools": [t for t in tools if t.name in OPENCHOREO_TOOLS],
             "ae_tools": [t for t in tools if t.name in AE_TOOLS],
+            "skills_catalog": skills_catalog,
         }
         if context:
             template_context.update(context)
@@ -178,6 +196,7 @@ HANDOFF_AGENT = Agent(
     ],
     response_format=HandoffResult,
     recursion_limit=50,
+    skills={"issue-fix"},
 )
 
 CHAT_AGENT = Agent(
@@ -380,44 +399,62 @@ async def run_analysis(
                     logger.error("Remediation agent failed, saving RCA report without it: %s", e)
 
             if settings.ae_handoff and isinstance(rca_report.result, RootCauseIdentified):
-                try:
-                    logger.info("Running handoff agent")
-                    handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
-                        auth=get_oauth2_auth(),
-                        usage_callback=usage_callback,
-                        context={"scope": scope, "auto_dispatch": settings.ae_auto_dispatch},
-                    )
+                recommended_actions = report_data["result"]["recommendations"][
+                    "recommended_actions"
+                ]
+                shortcut_classification = classify_handoff_shortcut(recommended_actions)
 
-                    handoff_result_raw = await asyncio.wait_for(
-                        handoff_agent.ainvoke(
-                            {
-                                "messages": [
-                                    {
-                                        "role": "user",
-                                        # report_data reflects the remediation-revised
-                                        # actions (status/change) when the remediation
-                                        # agent ran — that's the config-vs-code signal
-                                        # the handoff agent classifies on.
-                                        "content": json.dumps(report_data),
-                                    }
-                                ],
-                            }
-                        ),
-                        timeout=settings.analysis_timeout_seconds,
+                if shortcut_classification is not None:
+                    # Provably no code-level work exists (empty actions, or every
+                    # action already config-handled/applied/dismissed) — skip the
+                    # LLM call entirely rather than pay for a run that can only
+                    # ever conclude "nothing to hand off".
+                    handoff_report = build_shortcut_result(
+                        shortcut_classification, recommended_actions
                     )
-
-                    handoff_report: HandoffResult = handoff_result_raw["structured_response"]
-                    if handoff_logging and (summary := handoff_logging.tool_call_summary()):
-                        logger.debug("Handoff tool calls: %s", summary)
                     report_data["handoff"] = handoff_report.model_dump()
                     logger.info(
-                        "Handoff completed: classification=%s, issue=%s, dispatch=%s",
-                        handoff_report.classification,
-                        handoff_report.created_issue_url,
-                        handoff_report.dispatch_run_name,
+                        "Handoff short-circuited: classification=%s", shortcut_classification
                     )
-                except Exception as e:
-                    logger.error("Handoff agent failed, saving RCA report without it: %s", e)
+                else:
+                    try:
+                        logger.info("Running handoff agent")
+                        handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
+                            auth=get_oauth2_auth(),
+                            usage_callback=usage_callback,
+                            context={"scope": scope, "auto_dispatch": settings.ae_auto_dispatch},
+                        )
+
+                        handoff_result_raw = await asyncio.wait_for(
+                            handoff_agent.ainvoke(
+                                {
+                                    "messages": [
+                                        {
+                                            "role": "user",
+                                            # report_data reflects the remediation-revised
+                                            # actions (status/change) when the remediation
+                                            # agent ran — that's the config-vs-code signal
+                                            # the handoff agent classifies on.
+                                            "content": json.dumps(report_data),
+                                        }
+                                    ],
+                                }
+                            ),
+                            timeout=settings.analysis_timeout_seconds,
+                        )
+
+                        handoff_report = handoff_result_raw["structured_response"]
+                        if handoff_logging and (summary := handoff_logging.tool_call_summary()):
+                            logger.debug("Handoff tool calls: %s", summary)
+                        report_data["handoff"] = handoff_report.model_dump()
+                        logger.info(
+                            "Handoff completed: classification=%s, issue=%s, dispatch=%s",
+                            handoff_report.classification,
+                            handoff_report.created_issue_url,
+                            handoff_report.dispatch_run_name,
+                        )
+                    except Exception as e:
+                        logger.error("Handoff agent failed, saving RCA report without it: %s", e)
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,
