@@ -30,10 +30,11 @@ class Settings(BaseSettings):
     )
     ae_api_url: str = ""
     # aep-api's REST base for publishing RCA reports (POST /api/v1/rca-agent/
-    # reports). This is DISTINCT from ae_api_url: ae_api_url points at the MCP
-    # endpoint the handoff tools use (e.g. the aep-mcp-server), whereas report
-    # publishing targets aep-api's HTTP API. Falls back to ae_api_url only if
-    # they happen to be the same host. See RCA-REPORT-PUBLISHING.md.
+    # reports). ae_api_url is the base for the handoff MCP surface (the ae_*
+    # tools now live in-process on aep-api at POST /sre-mcp), and aep_api_url is
+    # the base for report publishing — both target aep-api, so they normally
+    # carry the same value; aep_api_url falls back to ae_api_url when unset. See
+    # RCA-REPORT-PUBLISHING.md.
     aep_api_url: str = ""
 
     @property
@@ -52,7 +53,9 @@ class Settings(BaseSettings):
 
     @property
     def ae_mcp_url(self) -> str:
-        return f"{self.ae_api_url.rstrip('/')}/mcp"
+        # aep-api serves the SRE handoff tools at /sre-mcp (in-process; the old
+        # standalone aep-mcp-server that answered on /mcp was merged into aep-api).
+        return f"{self.ae_api_url.rstrip('/')}/sre-mcp"
 
     report_backend: str = "sqlite"
     sql_backend_uri: str = ""
