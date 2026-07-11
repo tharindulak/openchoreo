@@ -25,8 +25,22 @@ class Settings(BaseSettings):
     rca_llm_api_key_file: str = ""
 
     observer_api_url: str = "http://observer:8080"
-    openchoreo_api_url: str = "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"
+    openchoreo_api_url: str = (
+        "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"
+    )
     ae_api_url: str = ""
+    # aep-api's REST base for publishing RCA reports (POST /api/v1/rca-agent/
+    # reports). This is DISTINCT from ae_api_url: ae_api_url points at the MCP
+    # endpoint the handoff tools use (e.g. the aep-mcp-server), whereas report
+    # publishing targets aep-api's HTTP API. Falls back to ae_api_url only if
+    # they happen to be the same host. See RCA-REPORT-PUBLISHING.md.
+    aep_api_url: str = ""
+
+    @property
+    def rca_reports_api_base(self) -> str:
+        """Base URL for aep-api's RCA-report REST endpoint (aep_api_url,
+        falling back to ae_api_url)."""
+        return (self.aep_api_url or self.ae_api_url).rstrip("/")
 
     @property
     def observer_mcp_url(self) -> str:
@@ -76,6 +90,13 @@ class Settings(BaseSettings):
     remed_agent: bool = False
     ae_handoff: bool = False
     ae_auto_dispatch: bool = True
+    # When true, each completed RCA report is POSTed to aep-api's
+    # create-rca-agent-report endpoint so it surfaces in the AE console's
+    # Alerts bell/list (labs-agentic-engineer #154/#155/#156, PR #161).
+    # Requires aep_api_url (the aep-api REST base) plus the OAUTH_*
+    # client-credentials config the handoff already uses.
+    # See RCA-REPORT-PUBLISHING.md.
+    ae_publish_reports: bool = False
 
     log_level: str = "INFO"
     openai_debug_logs: bool = False
@@ -98,6 +119,12 @@ class Settings(BaseSettings):
     def _validate_ae_handoff_config(self) -> Settings:
         if self.ae_handoff and not self.ae_api_url:
             raise ValueError("ae_handoff=True requires: ae_api_url")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ae_publish_reports_config(self) -> Settings:
+        if self.ae_publish_reports and not self.rca_reports_api_base:
+            raise ValueError("ae_publish_reports=True requires: aep_api_url (or ae_api_url)")
         return self
 
 

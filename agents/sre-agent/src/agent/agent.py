@@ -44,6 +44,7 @@ from src.agent.tool_registry import (
 from src.auth.bearer import BearerTokenAuth
 from src.auth.oauth_client import get_oauth2_auth
 from src.clients import MCPClient, get_model, get_report_backend, resolve_api_key
+from src.clients.aep_reports import publish_rca_report, should_publish_report
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
@@ -469,6 +470,24 @@ async def run_analysis(
                 response.get("_index"),
                 response.get("result"),
             )
+
+            # Publish to the AE console (aep-api) so the report surfaces in the
+            # Alerts bell/list. Best-effort: the report is already stored
+            # locally, so a publish failure must not fail the analysis.
+            if settings.ae_publish_reports:
+                publish, skip_reason = should_publish_report(report_data)
+                if not publish:
+                    logger.info("Skipping RCA report publish to AE console: %s", skip_reason)
+                else:
+                    try:
+                        published_id = await publish_rca_report(report_data, get_oauth2_auth())
+                        logger.info("Published RCA report to AE console: id=%s", published_id)
+                    except Exception as e:
+                        logger.error(
+                            "Failed to publish RCA report to AE console "
+                            "(report stored locally): %s",
+                            e,
+                        )
 
         except asyncio.CancelledError:
             logger.warning("Analysis cancelled before completion")
