@@ -6,11 +6,16 @@
 `create_agent()` only knows a flat `system_prompt` + `tools` — there's no
 native progressive disclosure. This gives agents that shape anyway: skills
 are `SKILL.md` files (frontmatter `name`/`description` + markdown body)
-under `src/skills/<name>/SKILL.md`. An agent that declares `skills={...}`
+under `<skills-dir>/<name>/SKILL.md`. An agent that declares `skills={...}`
 gets a name+description catalog in its template context (cheap, always
 loaded) and a `load_skill` tool that returns a skill's full body only when
 the model decides it's relevant (loaded on demand, same as Claude Agent
 SDK skills — just adapted to a framework with no built-in equivalent).
+
+Skills are resolved from `settings.external_skills_dir` FIRST (a deploy-time
+mount — e.g. the AEP-owned `issue-fix` skill delivered via a ConfigMap), then
+from the built-in `src/skills` library baked into the image. The external
+directory therefore overrides or adds to the built-in one.
 """
 
 import logging
@@ -20,9 +25,22 @@ from pathlib import Path
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from src.config import settings
+
 logger = logging.getLogger(__name__)
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+
+
+def _search_dirs() -> list[Path]:
+    """Skill roots in precedence order: the deploy-time external mount (if
+    configured) first, then the built-in library."""
+    dirs: list[Path] = []
+    external = settings.external_skills_dir.strip()
+    if external:
+        dirs.append(Path(external))
+    dirs.append(SKILLS_DIR)
+    return dirs
 
 
 @dataclass(frozen=True)
@@ -54,16 +72,28 @@ def _parse_skill_md(text: str) -> tuple[str, str, str]:
     return name, description, body.strip()
 
 
-def load_skill(name: str) -> Skill:
-    path = SKILLS_DIR / name / "SKILL.md"
-    parsed_name, description, content = _parse_skill_md(path.read_text())
-    if parsed_name != name:
-        raise ValueError(f"{path} declares name={parsed_name!r}, expected {name!r}")
-    return Skill(name=parsed_name, description=description, content=content)
+def load_skill(name: str, search_dirs: list[Path] | None = None) -> Skill:
+    roots = search_dirs if search_dirs is not None else _search_dirs()
+    for root in roots:
+        path = root / name / "SKILL.md"
+        if not path.is_file():
+            continue
+        parsed_name, description, content = _parse_skill_md(path.read_text())
+        if parsed_name != name:
+            raise ValueError(f"{path} declares name={parsed_name!r}, expected {name!r}")
+        return Skill(name=parsed_name, description=description, content=content)
+
+    searched = ", ".join(str(root / name / "SKILL.md") for root in roots)
+    raise FileNotFoundError(
+        f"Skill '{name}' not found. Searched: {searched}. "
+        "For a deploy-time-mounted skill (e.g. 'issue-fix', owned by AEP), set "
+        "EXTERNAL_SKILLS_DIR to the mounted skills directory."
+    )
 
 
-def load_skills(names: set[str]) -> list[Skill]:
-    return [load_skill(name) for name in sorted(names)]
+def load_skills(names: set[str], search_dirs: list[Path] | None = None) -> list[Skill]:
+    roots = search_dirs if search_dirs is not None else _search_dirs()
+    return [load_skill(name, roots) for name in sorted(names)]
 
 
 class _LoadSkillInput(BaseModel):

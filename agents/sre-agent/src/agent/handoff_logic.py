@@ -19,6 +19,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
 
+from src.agent.fingerprint import error_fingerprint
 from src.agent.tool_registry import TOOLS
 from src.helpers import AlertScope
 from src.models.handoff_result import HandoffClassification, HandoffResult
@@ -43,8 +44,18 @@ SRE_AGENT_LABEL = "sre-agent"
 TASKMETA_LABELS = ["aep:task", "aep:coding", "aep:origin/incident"]
 
 
-def dedupe_key_for(component: str) -> str:
-    return f"sre-rca/{component}"
+def dedupe_key_for(component: str, fingerprint: str | None = None) -> str:
+    """Per-incident dedupe key.
+
+    Without a fingerprint the key is component-scoped (``sre-rca/<component>``),
+    so every incident on the component folds onto one open issue. With a
+    fingerprint of the triggering error signature the key becomes
+    ``sre-rca/<component>/<fingerprint>`` — identical recurrences still dedupe,
+    but a genuinely different root cause on the same component opens its own
+    issue instead of being suppressed behind the first one.
+    """
+    base = f"sre-rca/{component}"
+    return f"{base}/{fingerprint}" if fingerprint else base
 
 
 def design_component_name(component: str, project: str) -> str:
@@ -183,15 +194,24 @@ class _HandoffCallState:
         self.deduped = False
 
 
-def wrap_ae_tools_for_handoff(tools: list[BaseTool], scope: AlertScope) -> list[BaseTool]:
+def wrap_ae_tools_for_handoff(
+    tools: list[BaseTool],
+    scope: AlertScope,
+    report_context: dict[str, Any] | None = None,
+) -> list[BaseTool]:
     """Wrap `ae_create_issue`/`ae_dispatch_coding_agent` so the dedupe key, the
     SRE-Agent tag, and the dispatch guard are structural guarantees rather than
     prompt instructions the LLM has to remember every time.
+
+    report_context is the RCA report (model_dump) for this incident; when
+    supplied its error signature is folded into the dedupe key so distinct root
+    causes on the same component get distinct issues (see fingerprint.py).
     """
     if scope.component is None:
         return tools
 
-    dedupe_key = dedupe_key_for(scope.component)
+    fingerprint = error_fingerprint(report_context)
+    dedupe_key = dedupe_key_for(scope.component, fingerprint)
     # The design (unprefixed) name the taskmeta block and the dispatch call must
     # carry so aep-api's gate/EnsureComponent recognise the component.
     design_component = design_component_name(scope.component, scope.project)

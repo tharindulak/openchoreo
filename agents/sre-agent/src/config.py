@@ -29,11 +29,18 @@ class Settings(BaseSettings):
         "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"
     )
     ae_api_url: str = ""
+    # Path of the handoff MCP endpoint under ae_api_url. Two deployment shapes
+    # exist for the ae_* handoff tools and they answer on DIFFERENT paths:
+    #   - the standalone aep-mcp-server serves them at "/mcp" (default here), and
+    #   - the in-process aep-api surface serves them at "/sre-mcp".
+    # ae_mcp_url = ae_api_url + ae_mcp_path, so point ae_api_url at whichever
+    # server is deployed and set ae_mcp_path to match. Default "/mcp" tracks the
+    # standalone aep-mcp-server that current installs run (see AE-HANDOFF-DESIGN.md).
+    ae_mcp_path: str = "/mcp"
     # aep-api's REST base for publishing RCA reports (POST /api/v1/rca-agent/
-    # reports). ae_api_url is the base for the handoff MCP surface (the ae_*
-    # tools now live in-process on aep-api at POST /sre-mcp), and aep_api_url is
-    # the base for report publishing — both target aep-api, so they normally
-    # carry the same value; aep_api_url falls back to ae_api_url when unset. See
+    # reports). ae_api_url is the base for the handoff MCP surface (see
+    # ae_mcp_path), and aep_api_url is the base for report publishing — both
+    # target the AEP side; aep_api_url falls back to ae_api_url when unset. See
     # RCA-REPORT-PUBLISHING.md.
     aep_api_url: str = ""
 
@@ -53,9 +60,10 @@ class Settings(BaseSettings):
 
     @property
     def ae_mcp_url(self) -> str:
-        # aep-api serves the SRE handoff tools at /sre-mcp (in-process; the old
-        # standalone aep-mcp-server that answered on /mcp was merged into aep-api).
-        return f"{self.ae_api_url.rstrip('/')}/sre-mcp"
+        # Handoff MCP endpoint = base + configurable path (see ae_mcp_path).
+        # Default path "/mcp" matches the standalone aep-mcp-server; set
+        # AE_MCP_PATH=/sre-mcp for the in-process aep-api surface.
+        return f"{self.ae_api_url.rstrip('/')}/{self.ae_mcp_path.strip('/')}"
 
     report_backend: str = "sqlite"
     sql_backend_uri: str = ""
@@ -90,6 +98,15 @@ class Settings(BaseSettings):
     # that used to die outright when one server flaked.
     mcp_get_tools_max_retries: int = 3
     mcp_get_tools_retry_backoff_seconds: float = 2.0
+    # Directory of deploy-time-materialized skills, searched BEFORE the built-in
+    # src/skills library so a mounted skill overrides or adds to it. The handoff
+    # skill 'issue-fix' is owned by AEP (canonical home:
+    # services/aep-mcp-server/skills/issue-fix in labs-agentic-engineer) and is
+    # mounted here via a ConfigMap at deploy time — AEP is the source of truth,
+    # so it is NOT baked into this image. In-cluster this points at the mount
+    # (e.g. /etc/rca-agent/skills); for local dev point it at a checked-out copy.
+    # Empty ⇒ only the built-in library is used (handoff skill will be missing).
+    external_skills_dir: str = ""
     remed_agent: bool = False
     ae_handoff: bool = False
     ae_auto_dispatch: bool = True

@@ -101,7 +101,8 @@ class Agent:
 
         scope = context.get("scope") if context else None
         if scope is not None and TOOLS.AE_CREATE_ISSUE in {t.name for t in tools}:
-            tools = wrap_ae_tools_for_handoff(tools, scope)
+            report_context = context.get("report_context") if context else None
+            tools = wrap_ae_tools_for_handoff(tools, scope, report_context)
 
         skills_catalog = []
         if self._skills:
@@ -423,7 +424,14 @@ async def run_analysis(
                         handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
                             auth=get_oauth2_auth(),
                             usage_callback=usage_callback,
-                            context={"scope": scope, "auto_dispatch": settings.ae_auto_dispatch},
+                            context={
+                                "scope": scope,
+                                "auto_dispatch": settings.ae_auto_dispatch,
+                                # Drives the error-fingerprint component of the
+                                # dedupe key so distinct root causes on one
+                                # component get distinct issues.
+                                "report_context": report_data,
+                            },
                         )
 
                         handoff_result_raw = await asyncio.wait_for(
