@@ -24,6 +24,8 @@ from pydantic import BaseModel
 from src.agent.handoff_logic import (
     build_shortcut_result,
     classify_handoff_shortcut,
+    compose_handoff_result,
+    handoff_input,
     wrap_ae_tools_for_handoff,
 )
 from src.agent.middleware import (
@@ -48,7 +50,7 @@ from src.clients.aep_reports import publish_rca_report, should_publish_report
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
-from src.models import ChatResponse, HandoffResult, RCAReport
+from src.models import ChatResponse, HandoffJudgment, RCAReport
 from src.models.rca_report import RootCauseIdentified
 from src.models.remediation_result import RemediationResult
 from src.template_manager import render
@@ -102,7 +104,16 @@ class Agent:
         scope = context.get("scope") if context else None
         if scope is not None and TOOLS.AE_CREATE_ISSUE in {t.name for t in tools}:
             report_context = context.get("report_context") if context else None
-            tools = wrap_ae_tools_for_handoff(tools, scope, report_context)
+            # handoff_outcome is the CALLER's dict: the wrapper writes what
+            # ae_create_issue answered into it, and the caller composes those
+            # facts into the report afterwards (compose_handoff_result).
+            tools = wrap_ae_tools_for_handoff(
+                tools,
+                scope,
+                report_context,
+                auto_dispatch=bool(context.get("auto_dispatch", True)) if context else True,
+                outcome=context.get("handoff_outcome") if context else None,
+            )
 
         skills_catalog = []
         if self._skills:
@@ -190,13 +201,14 @@ HANDOFF_AGENT = Agent(
     tools={
         TOOLS.AE_SEARCH_RELATED_ISSUES,
         TOOLS.AE_CREATE_ISSUE,
-        TOOLS.AE_DISPATCH_CODING_AGENT,
     },
     middleware=[
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
     ],
-    response_format=HandoffResult,
+    # The model returns its JUDGMENT only. The classification is derived from it
+    # plus remediation's statuses, so it is deliberately absent from this schema.
+    response_format=HandoffJudgment,
     recursion_limit=50,
     skills={"issue-fix"},
 )
@@ -421,12 +433,17 @@ async def run_analysis(
                 else:
                     try:
                         logger.info("Running handoff agent")
+                        # Filled by the ae_create_issue wrapper with what AE
+                        # answered; read back after the run so the report's issue
+                        # and dispatch state are facts rather than restatements.
+                        handoff_outcome: dict[str, Any] = {}
                         handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
                             auth=get_oauth2_auth(),
                             usage_callback=usage_callback,
                             context={
                                 "scope": scope,
                                 "auto_dispatch": settings.ae_auto_dispatch,
+                                "handoff_outcome": handoff_outcome,
                                 # Drives the error-fingerprint component of the
                                 # dedupe key so distinct root causes on one
                                 # component get distinct issues.
@@ -440,11 +457,12 @@ async def run_analysis(
                                     "messages": [
                                         {
                                             "role": "user",
-                                            # report_data reflects the remediation-revised
-                                            # actions (status/change) when the remediation
-                                            # agent ran — that's the config-vs-code signal
-                                            # the handoff agent classifies on.
-                                            "content": json.dumps(report_data),
+                                            # handoff_input, not report_data: the
+                                            # observability recommendations are advice
+                                            # about future RCAs, not this incident's
+                                            # fix, and they are the noise this stage
+                                            # must not file issues for.
+                                            "content": json.dumps(handoff_input(report_data)),
                                         }
                                     ],
                                 }
@@ -452,15 +470,22 @@ async def run_analysis(
                             timeout=settings.analysis_timeout_seconds,
                         )
 
-                        handoff_report = handoff_result_raw["structured_response"]
+                        handoff_report = compose_handoff_result(
+                            handoff_result_raw["structured_response"],
+                            recommended_actions,
+                            handoff_outcome,
+                        )
                         if handoff_logging and (summary := handoff_logging.tool_call_summary()):
                             logger.debug("Handoff tool calls: %s", summary)
                         report_data["handoff"] = handoff_report.model_dump()
                         logger.info(
-                            "Handoff completed: classification=%s, issue=%s, dispatch=%s",
+                            "Handoff completed: classification=%s, issue=%s, adopted=%s%s",
                             handoff_report.classification,
                             handoff_report.created_issue_url,
-                            handoff_report.dispatch_run_name,
+                            handoff_report.adopted,
+                            f" ({handoff_report.adoption_error})"
+                            if handoff_report.adoption_error
+                            else "",
                         )
                     except Exception as e:
                         logger.error("Handoff agent failed, saving RCA report without it: %s", e)

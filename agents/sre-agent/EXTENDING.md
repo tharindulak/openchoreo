@@ -146,10 +146,10 @@ class MyBackend(ReportBackend):
 - The **remediation agent recommends only** — its prompt forbids applying changes
   (`remed_agent_prompt.j2`: *"do not execute or apply any actions"*). Don't change this to
   auto-apply without an explicit design decision.
-- The **handoff agent files/dispatches only** — it creates a GitHub issue and (if
-  `AE_AUTO_DISPATCH=true`) dispatches the AE coding agent, but the coding agent stops at
-  opening a PR. Nothing in this path auto-merges; PR review is the human gate. See
-  `AE-HANDOFF-DESIGN.md`.
+- The **handoff agent files only** — it creates a GitHub issue, and (if
+  `AE_AUTO_DISPATCH=true`) AEP adopts that issue as it files it, which is what puts the
+  coding agent on it. The coding agent stops at opening a PR: nothing in this path
+  auto-merges, and PR review is the human gate. See `AE-HANDOFF-DESIGN.md`.
 - Analysis/remediation run as the agent's **service account** (`get_oauth2_auth()`); chat
   runs as the **user** (`BearerTokenAuth`). Preserve this identity split for new stages.
 - Tools are an **allow-list** (read-only observability + scoped OpenChoreo reads, plus the

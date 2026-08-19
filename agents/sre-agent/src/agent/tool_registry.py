@@ -106,11 +106,6 @@ class TOOLS:
         server=AE,
         active_form="Creating GitHub issue...",
     )
-    AE_DISPATCH_CODING_AGENT = Tool(
-        "ae_dispatch_coding_agent",
-        server=AE,
-        active_form="Dispatching coding agent...",
-    )
 
 
 _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]

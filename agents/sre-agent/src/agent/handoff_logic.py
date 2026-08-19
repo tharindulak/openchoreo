@@ -4,17 +4,26 @@
 """Deterministic parts of the AE handoff decision.
 
 The handoff LLM agent (`prompts/handoff_agent_prompt.j2`) keeps the genuinely
-judgment-based work: deciding whether an ambiguous root cause needs a code
-change, searching for related issues, judging their relevance, and writing
-the issue body. Everything that is a mechanical fact about the data — the
-config_level/none classification, the dedupe key, the SRE-Agent tag, and the
-"never dispatch without a fresh issue" rule — is enforced here in code so it
+judgment-based work: deciding whether a root cause needs a code change at all,
+searching for related issues, judging their relevance, and writing the issue
+body. Everything that is a mechanical fact about the data — the CLASSIFICATION,
+the dedupe key, the SRE-Agent tag, the design component name, and whether the
+issue is handed to the coding agent at all — is enforced here in code so it
 can't be skipped by an off-prompt LLM response.
+
+Classification is derived, never asked for. code-level / config-level / mixed /
+none follows from remediation's `status` field plus one boolean the model does
+own (`needs_code_change`), so the model is never in a position to contradict the
+data it was handed. See derive_classification.
+
+There is no dispatch step to guard any more. AE adopts an issue as it creates
+it (`ae_create_issue`'s `adopt`, default true), so filing and handing over are
+one call that cannot come apart — and the operator's `AE_AUTO_DISPATCH` switch
+is applied here, on that one call, rather than trusted to the prompt.
 """
 
 import json
 import logging
-import re
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -22,7 +31,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from src.agent.fingerprint import error_fingerprint
 from src.agent.tool_registry import TOOLS
 from src.helpers import AlertScope
-from src.models.handoff_result import HandoffClassification, HandoffResult
+from src.models.handoff_result import HandoffClassification, HandoffJudgment, HandoffResult
 from src.models.remediation_result import ActionStatus
 
 logger = logging.getLogger(__name__)
@@ -32,16 +41,6 @@ logger = logging.getLogger(__name__)
 # SRE-agent-filed issue project-wide with `label:sre-agent`, independent of
 # the per-component dedupe key used for idempotency.
 SRE_AGENT_LABEL = "sre-agent"
-
-# aep-api's tasks-github-native marker scheme (services/aep-api/internal/contracts/
-# taskmeta: labels.go, block.go). Every issue this stage creates is already a
-# code-level fix (classify_handoff_shortcut short-circuits config_level/none
-# before the LLM ever runs), so the class is always "coding". Stamping these at
-# creation — instead of relying solely on PromoteAndExecute's later promotion —
-# means the issue is a well-formed Task immediately, before dispatch is ever
-# attempted. `aep:execute` is deliberately excluded: it is the actual dispatch
-# trigger and stays a distinct, later action (see OnLabeled in aep-api).
-TASKMETA_LABELS = ["aep:task", "aep:coding", "aep:origin/incident"]
 
 
 def dedupe_key_for(component: str, fingerprint: str | None = None) -> str:
@@ -63,55 +62,18 @@ def design_component_name(component: str, project: str) -> str:
     name AE's design model uses.
 
     The observability alert scope carries the OpenChoreo component name, which is
-    project-prefixed (e.g. `testyello-service1`), but AE's design (specs/design/
-    components/<name>) and the funnel's dispatch-time gate key on the UNPREFIXED
-    name (`service1`). Passing the prefixed name makes the gate cancel the run
-    with "component not in design at HEAD". aep-api's own EnsureComponent expects
-    the unprefixed name too. The issue-fix skill already tells the LLM to strip
-    this prefix by hand (SKILL.md) — doing it deterministically here removes that
-    per-call dependency so a stray prefixed name can't silently kill dispatch.
+    project-prefixed (e.g. `testyello-service1`), but AE's design lives under
+    specs/design/components/<name> with the UNPREFIXED name (`service1`), and
+    that is what aep-api resolves `componentName` against before it adopts the
+    issue. A prefixed name therefore FAILS the create call outright.
+
+    That refusal is deliberate on AE's side and this function is why it should
+    never fire: the LLM kept copying the prefixed name out of the related issues
+    it had just read, so the normalisation is done here, once, in code.
     """
     if project and component.startswith(f"{project}-"):
         return component[len(project) + 1 :]
     return component
-
-
-def _taskmeta_block(component: str) -> str:
-    """Mirrors taskmeta.Block.Serialize() for a fresh incident-origin coding
-    Task — the `<!-- aep:task/v1 ... -->` machine block aep-api's webhook
-    handlers (OnOpenedOrEdited/OnLabeled) require to recognize an issue as a
-    dispatchable Task at all. `component` MUST be the design (unprefixed) name —
-    see design_component_name."""
-    return f"<!-- aep:task/v1\ncomponent: {component}\norigin: incident\n-->\n\n"
-
-
-def _ensure_taskmeta_block(body: str, component: str) -> str:
-    """Guarantee the issue body carries a taskmeta block whose `component:` is the
-    design (unprefixed) name, and return the corrected body.
-
-    The handoff LLM sometimes writes its OWN block (copied from the related
-    issues it reads via ae_search_related_issues, which carry the project-PREFIXED
-    OpenChoreo name), so a "inject only when absent" guard silently defers to the
-    wrong name — the funnel gate reads THIS block (not the dispatch call's param)
-    and cancels with "component not in design at HEAD". So be authoritative: if a
-    leading block exists, rewrite its component line to the design name (adding
-    the line if the LLM's block omitted it); otherwise inject a fresh block.
-    """
-    if not body.lstrip().startswith("<!-- aep:task/v1"):
-        return _taskmeta_block(component) + body
-
-    end = body.find("-->")
-    if end == -1:  # malformed/unterminated block — replace defensively
-        return _taskmeta_block(component) + body
-    head, tail = body[:end], body[end:]
-    new_head, n = re.subn(
-        r"(?m)^(\s*component:\s*).*$", r"\g<1>" + component, head, count=1
-    )
-    if n == 0:  # block had no component line — insert one after the opener
-        new_head = head.replace(
-            "<!-- aep:task/v1", f"<!-- aep:task/v1\ncomponent: {component}", 1
-        )
-    return new_head + tail
 
 
 def _parse_tool_result(raw: Any) -> dict[str, Any]:
@@ -143,11 +105,14 @@ def classify_handoff_shortcut(
     """Decide classification directly from remediation's status field when the
     data makes it unambiguous, skipping the handoff LLM call entirely.
 
-    Returns None when genuine judgment is required (leaving it to the LLM):
-    remediation didn't run at all (actions have no `status`), or at least one
-    action is still `suggested` — the LLM decides whether that's code_level
-    or mixed, since `status` alone isn't a reliable enough signal for that
-    call (per the prompt's own caveat).
+    Returns None when genuine judgment is required, which is exactly one
+    question: does the remaining work need a code change? That happens when at
+    least one action is still `suggested`, or when remediation didn't run at all
+    (the actions then carry no `status`, so nothing is derivable and the model
+    judges from the root cause alone).
+
+    Note what this does NOT defer: once the model answers that question,
+    code-level vs mixed follows from the statuses. See derive_classification.
     """
     if not recommended_actions:
         return HandoffClassification.NONE
@@ -188,95 +153,192 @@ def build_shortcut_result(
     return HandoffResult(classification=classification, rationale=rationale)
 
 
-class _HandoffCallState:
-    def __init__(self) -> None:
-        self.created_issue_number: int | None = None
-        self.deduped = False
+def handoff_input(report_data: dict[str, Any]) -> dict[str, Any]:
+    """The report as the handoff stage should see it. Two things are withheld, and
+    both are boundaries rather than judgments — the model cannot weigh what it
+    never sees.
+
+    **The observability recommendations, entirely.** `recommended_actions` is how
+    this incident gets fixed; `observability_recommendations` is advice for making
+    FUTURE analyses easier ("add a metric", "raise the log level"), and it is the
+    main source of issues a coding agent cannot act on. This does NOT narrow what
+    a code-level fix can be: a logging gap that is part of THIS incident's root
+    cause arrives as a recommended_action and is filed like any other.
+
+    **The `change` patch on every already-handled (`revised`) action.** The issue
+    this stage writes becomes a coding agent's prompt, and that agent can only
+    edit the repository — so a concrete ReleaseBinding patch in front of it is an
+    invitation to express config as code and open a wrong pull request. The
+    action's description and status stay, because the model does need to know that
+    part of the incident was already fixed by configuration; otherwise it writes
+    an issue asking for that fix again, in code.
+
+    Returns a copied view, deep only where it edits. The stored report keeps every
+    field: the console renders the observability recommendations and the config
+    patches, so trimming report_data itself would delete something a human is
+    meant to read.
+    """
+    result = report_data.get("result")
+    if not isinstance(result, dict):
+        return report_data
+    recommendations = result.get("recommendations")
+    if not isinstance(recommendations, dict):
+        return report_data
+
+    trimmed: dict[str, Any] = {
+        k: v for k, v in recommendations.items() if k != "observability_recommendations"
+    }
+    actions = trimmed.get("recommended_actions")
+    if isinstance(actions, list):
+        trimmed["recommended_actions"] = [
+            {k: v for k, v in action.items() if k != "change"}
+            if isinstance(action, dict) and action.get("status") == ActionStatus.REVISED
+            else action
+            for action in actions
+        ]
+    return {
+        **report_data,
+        "result": {**result, "recommendations": trimmed},
+    }
+
+
+def derive_classification(
+    needs_code_change: bool, recommended_actions: list[dict[str, Any]]
+) -> HandoffClassification:
+    """The classification, computed rather than claimed.
+
+    Three rules, and every input is already on the table:
+
+    - The model said no code change is needed → `none`. This is the one input it
+      owns, because no status field can express "this recommendation is a vague
+      nicety, not a defect".
+    - Code needed, and some action was already translated into a ReleaseBinding
+      change (`revised`) → `mixed`: part of this incident was fixed by config and
+      part needs code.
+    - Code needed and nothing was config-handled → `code_level`. Statusless
+      actions land here too, which is correct: remediation did not run, so
+      nothing was config-handled, and the model judged the root cause directly.
+    """
+    if not needs_code_change:
+        return HandoffClassification.NONE
+    if any(a.get("status") == ActionStatus.REVISED for a in recommended_actions):
+        return HandoffClassification.MIXED
+    return HandoffClassification.CODE_LEVEL
+
+
+def compose_handoff_result(
+    judgment: HandoffJudgment,
+    recommended_actions: list[dict[str, Any]],
+    outcome: dict[str, Any],
+) -> HandoffResult:
+    """Assemble the persisted record: the model's judgment, the derived
+    classification, and the facts `ae_create_issue` answered.
+
+    The split is the point. `rationale` and `related_issues` are the model's and
+    are copied verbatim. `classification` is derived. The issue number, url,
+    dedupe and adoption state are stamped from the wire, because the console's
+    Alerts list serves them as-is — a model restating one loosely would show a
+    human the wrong state while they triage an incident.
+
+    An empty outcome means `ae_create_issue` was never called: the model declined
+    to file, or a matching open issue made filing unnecessary. Either way there is
+    nothing to stamp, and the derived classification still tells the truth about
+    whether code work exists.
+    """
+    return HandoffResult(
+        classification=derive_classification(judgment.needs_code_change, recommended_actions),
+        rationale=judgment.rationale,
+        related_issues=judgment.related_issues,
+        created_issue_number=outcome.get("number"),
+        created_issue_url=outcome.get("url"),
+        deduped=bool(outcome.get("deduped")),
+        adopted=bool(outcome.get("adopted")),
+        adoption_error=outcome.get("adoption_error"),
+    )
 
 
 def wrap_ae_tools_for_handoff(
     tools: list[BaseTool],
     scope: AlertScope,
     report_context: dict[str, Any] | None = None,
+    auto_dispatch: bool = True,
+    outcome: dict[str, Any] | None = None,
 ) -> list[BaseTool]:
-    """Wrap `ae_create_issue`/`ae_dispatch_coding_agent` so the dedupe key, the
-    SRE-Agent tag, and the dispatch guard are structural guarantees rather than
-    prompt instructions the LLM has to remember every time.
+    """Wrap `ae_create_issue` so the dedupe key, the SRE-Agent tag, the design
+    component name, and the auto-dispatch decision are structural guarantees
+    rather than prompt instructions the LLM has to remember every time.
+
+    Every one of them is a mechanical fact about THIS incident, not a judgment:
+    the LLM's job is the issue's title and body, and each of these was, at some
+    point, something it got wrong.
 
     report_context is the RCA report (model_dump) for this incident; when
     supplied its error signature is folded into the dedupe key so distinct root
     causes on the same component get distinct issues (see fingerprint.py).
+
+    auto_dispatch is the operator's `AE_AUTO_DISPATCH`. It is applied HERE, on
+    the create call, because that call is the dispatch: false files a ledger
+    entry that waits for a human instead.
+
+    outcome, when given, is filled with what `ae_create_issue` ANSWERED — the
+    issue number and url, and whether it deduped or was adopted. The report's
+    facts are then taken from there rather than from the LLM's structured
+    response (see compose_handoff_result): a field the model has to restate is a
+    field it can restate wrongly, and this one drives what the console shows.
     """
     if scope.component is None:
         return tools
 
     fingerprint = error_fingerprint(report_context)
     dedupe_key = dedupe_key_for(scope.component, fingerprint)
-    # The design (unprefixed) name the taskmeta block and the dispatch call must
-    # carry so aep-api's gate/EnsureComponent recognise the component.
+    # The design (unprefixed) name aep-api resolves `componentName` against
+    # before it will adopt the issue.
     design_component = design_component_name(scope.component, scope.project)
-    state = _HandoffCallState()
-    wrapped: list[BaseTool] = []
 
-    for tool in tools:
-        if tool.name == TOOLS.AE_CREATE_ISSUE:
-            wrapped.append(_wrap_create_issue(tool, dedupe_key, state, design_component))
-        elif tool.name == TOOLS.AE_DISPATCH_CODING_AGENT:
-            wrapped.append(_wrap_dispatch(tool, state, design_component))
-        else:
-            wrapped.append(tool)
-
-    return wrapped
+    return [
+        _wrap_create_issue(tool, dedupe_key, design_component, auto_dispatch, outcome)
+        if tool.name == TOOLS.AE_CREATE_ISSUE
+        else tool
+        for tool in tools
+    ]
 
 
 def _wrap_create_issue(
-    tool: BaseTool, dedupe_key: str, state: _HandoffCallState, component: str
+    tool: BaseTool,
+    dedupe_key: str,
+    component: str,
+    auto_dispatch: bool,
+    outcome: dict[str, Any] | None,
 ) -> BaseTool:
     async def _run(**kwargs: Any) -> str:
         kwargs["dedupeKey"] = dedupe_key
+        # Forced, not defaulted: the LLM copies the project-PREFIXED name out of
+        # the related issues it just read, and aep-api refuses that name.
+        kwargs["componentName"] = component
+        kwargs["adopt"] = auto_dispatch
         labels = [str(v) for v in (kwargs.get("labels") or [])]
-        for label in (SRE_AGENT_LABEL, *TASKMETA_LABELS):
-            if label not in labels:
-                labels.append(label)
+        if SRE_AGENT_LABEL not in labels:
+            labels.append(SRE_AGENT_LABEL)
         kwargs["labels"] = labels
 
-        kwargs["body"] = _ensure_taskmeta_block(str(kwargs.get("body") or ""), component)
-
         raw = await tool.ainvoke(kwargs)
-        try:
-            result = _parse_tool_result(raw)
-            state.deduped = bool(result.get("deduped"))
-            state.created_issue_number = result.get("number")
-        except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
-            logger.warning("Could not parse ae_create_issue result for dispatch guard: %r", raw)
+        if outcome is not None:
+            try:
+                result = _parse_tool_result(raw)
+                outcome.update(
+                    {
+                        "number": result.get("number"),
+                        "url": result.get("url"),
+                        "deduped": bool(result.get("deduped")),
+                        "adopted": bool(result.get("adopted")),
+                        "adoption_error": result.get("adoptionError") or None,
+                    }
+                )
+            except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+                # An unreadable result is worth a warning, not a failure: the
+                # issue may well exist, and the LLM still sees the raw answer.
+                logger.warning("Could not parse ae_create_issue result: %r", raw)
         return raw
-
-    return StructuredTool.from_function(
-        coroutine=_run,
-        name=tool.name,
-        description=tool.description,
-        args_schema=tool.args_schema,
-    )
-
-
-def _wrap_dispatch(tool: BaseTool, state: _HandoffCallState, design_component: str) -> BaseTool:
-    async def _run(**kwargs: Any) -> str:
-        if state.created_issue_number is None or state.deduped:
-            return json.dumps(
-                {
-                    "error": (
-                        "Dispatch blocked: ae_dispatch_coding_agent can only be called after "
-                        "ae_create_issue created a NEW (non-deduped) issue in this same run."
-                    )
-                }
-            )
-        # Force the design (unprefixed) component name regardless of what the LLM
-        # passed. aep-api's PromoteAndExecute → EnsureComponent and the funnel
-        # gate both key on this name; a prefixed name fails EnsureComponent and
-        # cancels the run. This makes the normalisation structural instead of
-        # relying on the LLM to strip the prefix per the skill instruction.
-        kwargs["componentName"] = design_component
-        return await tool.ainvoke(kwargs)
 
     return StructuredTool.from_function(
         coroutine=_run,

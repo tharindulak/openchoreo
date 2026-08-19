@@ -91,16 +91,19 @@ OC alert fires
         └─► RCA_AGENT      → RCAReport                            (existing, scope-pure)
         └─► REMED_AGENT    → config-level ResourceChanges         (existing, REMED_AGENT flag)
         └─► HANDOFF_AGENT  (NEW stage, AE_HANDOFF flag, RootCauseIdentified only)
-              1. classify recommendations: config-level vs code-level
-              2. if code-level exists:
+              1. decide: does the root cause need a source code change?
+                   (classification is DERIVED from that answer + statuses)
+              2. if it does:
                    ae_search_related_issues(...)   ── dedup / avoid duplicates
-                   ae_create_issue(...)            ── RCA context + labels
-                   ae_dispatch_coding_agent(...)   ── auto-dispatch (flag)
-              3. record {issue_url, run_name, classification} on the RCA report
+                   ae_create_issue(...)            ── RCA context + labels, and
+                                                      adopt (default; the
+                                                      AE_AUTO_DISPATCH flag)
+              3. record {issue_url, adopted, classification} on the RCA report
                         │
    ┌────────────────────┘  (crosses into the AE repo)
    ▼
-AE aep-api  →  creates ComponentTask bound to the issue  →  dispatches K8s Job
+AE aep-api  →  files the issue into the deployed version's milestone as agent
+               work  →  starts (or wakes) the milestone's coding run
    ▼
 AE coding-agent pod (remote-worker, Claude Agent SDK)
    ├─ preloads: aep skill + NEW related-issues skill
@@ -149,9 +152,9 @@ IdP is shared and the service account is provisioned with the org claim** (see �
   behind the same public-edge `jwt` + `ensureOrg` middleware as the REST API.
 - The caller presents its Thunder token (`aud openchoreo-rca-agent`); the acting
   org is bound from the verified `ouHandle` claim (never the request).
-- Tools exposed (contracts in §7): `ae_search_related_issues`, `ae_create_issue`,
-  `ae_dispatch_coding_agent` — implemented in-process over `gitrepo.IssueService`
-  and `task.Commands.PromoteAndExecute`.
+- Tools exposed (contracts in §7): `ae_search_related_issues` and
+  `ae_create_issue`. There is no dispatch tool — creating an issue adopts it (see
+  §7 and AEP's ADR-0017), so filing and handing over cannot come apart.
 
 ### A3. New coding-agent SKILL — `runners/remote-worker/plugin/skills/related-issues/SKILL.md`
 - Frontmatter (`name`, `description`) mirroring the existing `aep` skill; add its id to
@@ -191,14 +194,14 @@ Add a third server (only when `ae_handoff` is on) to `MultiServerMCPClient`, reu
 
 ### B3. Tool registry — `src/agent/tool_registry.py`
 Add `AE = "ae"` server constant and `Tool` entries with active-forms:
-`ae_search_related_issues`, `ae_create_issue`, `ae_dispatch_coding_agent`; group into
-`AE_TOOLS`. Surface them in `Agent.create()`'s template context (add an `ae_tools` split).
+`ae_search_related_issues`, `ae_create_issue`; group into `AE_TOOLS`. Surface them
+in `Agent.create()`'s template context (add an `ae_tools` split).
 
 ### B4. New agent stage — `src/agent/agent.py` + `src/templates/prompts/handoff_agent_prompt.j2`
 ```python
 HANDOFF_AGENT = Agent(
     template="prompts/handoff_agent_prompt.j2",
-    tools={TOOLS.AE_SEARCH_RELATED_ISSUES, TOOLS.AE_CREATE_ISSUE, TOOLS.AE_DISPATCH_CODING_AGENT},
+    tools={TOOLS.AE_SEARCH_RELATED_ISSUES, TOOLS.AE_CREATE_ISSUE},
     middleware=[LoggingMiddleware, ToolErrorHandlerMiddleware],
     response_format=HandoffResult,     # new model, see B5
     recursion_limit=50,
@@ -206,23 +209,47 @@ HANDOFF_AGENT = Agent(
 ```
 Wire into `run_analysis()` after the remediation block, guarded by
 `settings.ae_handoff and isinstance(rca_report.result, RootCauseIdentified)`. Wrap in
-try/except like remediation so a handoff failure never fails the RCA report. Honor
-`ae_auto_dispatch` (skip the dispatch tool when false).
+try/except like remediation so a handoff failure never fails the RCA report.
 
-The prompt encodes the **config-vs-code decision** (§8) and the create→dispatch sequence, and
-tells the agent NOT to comment on related issues itself (the AE coding-agent skill does that).
+`ae_auto_dispatch` is honoured in CODE, not by the prompt: `_wrap_create_issue`
+sets `adopt` on the create call from the flag, so the model cannot adopt against
+the operator's wishes and cannot forget to. The same wrapper forces `dedupeKey`,
+the `sre-agent` label, and the unprefixed design `componentName`, and records
+what the call answered (see B5).
+
+The prompt encodes the **config-vs-code decision** (§8), and tells the agent NOT to
+comment on related issues itself (the AE coding-agent skill does that).
 
 ### B5. Report model — `src/models/rca_report.py` (or a new `handoff_result.py`)
 Add an optional block recording what was filed/dispatched, so the portal + audit trail show it:
+Two models, because two different things are being recorded — a judgment and a
+set of facts:
 ```python
-class HandoffResult(BaseModel):
-    classification: Literal["config_level", "code_level", "mixed"]
+class HandoffJudgment(BaseModel):     # the LLM's response_format
+    needs_code_change: bool           # the ONE question it answers
+    rationale: str
+    related_issues: list[RelatedIssue] = []
+
+class HandoffResult(BaseModel):       # the persisted record
+    classification: Literal["config_level", "code_level", "mixed", "none"]
     created_issue_url: str | None = None
     created_issue_number: int | None = None
-    dispatch_run_name: str | None = None
-    related_issue_urls: list[str] = []
-    notes: str | None = None
+    adopted: bool = False              # AE has the issue and a run is on it
+    adoption_error: str | None = None  # why not, when not
+    related_issues: list[RelatedIssue] = []
+    rationale: str
 ```
+`classification` is absent from the LLM's schema on purpose: it is DERIVED
+(`derive_classification`) from `needs_code_change` plus remediation's statuses —
+`none` when no code change is needed, `mixed` when some action was already
+`revised` into a ReleaseBinding change, `code_level` otherwise. Asking a model to
+restate a boolean over a field it was just handed only lets it disagree with the
+data.
+
+The issue/adoption fields are STAMPED from `ae_create_issue`'s answer
+(`apply_handoff_facts`), not restated by the model: the console's Alerts list
+serves this snapshot as-is, so a loose restatement would show a human the wrong
+dispatch state while they triage.
 Attach as `RCAReport.handoff: HandoffResult | None` and persist via `upsert_rca_report`.
 
 ---
@@ -232,15 +259,24 @@ Attach as `RCAReport.handoff: HandoffResult | None` and persist via `upsert_rca_
 | Tool | Input | Output | Backing REST (A1) |
 |---|---|---|---|
 | `ae_search_related_issues` | `project`, `query?` (space-separated keywords), `labels[]?` | `[{Number,Title,Body,URL,State,Labels}]` ranked by keyword overlap | `GET …/issues` |
-| `ae_create_issue` | `project`, `title`, `body`, `labels[]?` | `{number, url, nodeId}` | `POST …/issues` |
-| `ae_dispatch_coding_agent` | `project`, `componentName`, `title`, `issueNumber`, `issueUrl` | `{taskId, componentName, runName?, status, error?}` | `POST …/tasks/dispatch-from-issue` |
+| `ae_create_issue` | `project`, `title`, `body`, `labels[]?`, `componentName?`, `dedupeKey?`, `adopt?` | `{number, url, nodeId, deduped?, adopted?, adoptionError?}` | `POST …/issues` |
 
 `project` = OC project (AE resolves repo/org). Bearer forwarded from the SRE agent.
 
-`ae_dispatch_coding_agent` needs more than just the issue number: dispatch creates a brand-new
-`ComponentTask` row for an ad-hoc issue (AE's own generation flow always creates the task first,
-*then* the issue — an SRE-filed issue has no task yet), so `componentName` (must be a component
-AE already knows about — see §11.6) and `title`/`issueUrl` are required to construct that row.
+**Creating the issue IS the dispatch.** `adopt` defaults to true: AE files the issue
+into the deployed version's milestone (or the spec build in flight when nothing is
+deployed yet) as agent work, in ONE GitHub write, then starts or wakes that
+milestone's run. `adopt: false` files a ledger entry instead — recorded against the
+version, worked by nobody until a human adds `aep:codingagent`.
+
+`componentName` must be the name AE's DESIGN uses — unprefixed (`service1`, not
+`demohello-service1`, see §11.6). It is checked before the issue is filed, so a wrong
+name fails the call instead of surfacing later inside a coding cycle.
+
+The answer carries the two things the caller cannot work out for itself: `deduped`
+(an open issue with the same key already existed, and its own run owns its dispatch)
+and `adopted` / `adoptionError` (whether anything will actually work this issue —
+a project with nothing built yet gets the issue recorded but not adopted).
 
 ---
 
@@ -257,8 +293,19 @@ Encoded in `handoff_agent_prompt.j2`, seeded by the remediation output:
   can address.
 - **Mixed:** apply config via the existing OC path AND file a code issue for the code part.
 
-The prompt states this explicitly rather than relying purely on the `status` field, so the LLM
-can justify the classification from the root cause.
+The LLM is asked for one thing — `needs_code_change` — and `status` is a strong signal for it
+rather than the rule, so a root cause no config knob can address still files even when the
+remediation agent revised something. The config/code/mixed LABEL is then derived, not judged;
+see B5.
+
+Two things are withheld from the payload the model sees (`handoff_input`), both boundaries rather
+than instructions. `observability_recommendations` goes entirely — advice for making future
+analyses easier is not this incident's fix, and it is the main source of issues a coding agent
+cannot act on. And the `change` patch is stripped from every already-`revised` action: the issue
+becomes a coding agent's prompt, that agent can only edit the repository, and a concrete
+ReleaseBinding patch in front of it invites a pull request expressing config as code. The
+action's description and status stay, so the issue can say "this part was already fixed by
+configuration" instead of asking for it again.
 
 ---
 
@@ -324,13 +371,14 @@ server) — noted here so we can pivot without redesign.
   `JWT_AUDIENCE: aep-*,openchoreo-rca-agent` (comma-list is supported via `SplitAndTrim`).
 - **OC scoped-name vs AE component name.** OC's alert scope carries the *scoped* component name
   (`<project>-<component>`, e.g. `demoservices-service1`) while AE keys components unprefixed
-  (`service1`). Handled in `handoff_agent_prompt.j2` (strip the `<project>-` prefix for
-  `ae_dispatch_coding_agent.componentName`) — verified working: the created `ComponentTask` row
-  shows `service1`.
+  (`service1`). Handled in CODE — `design_component_name` strips the `<project>-` prefix and
+  `_wrap_create_issue` forces the result onto `ae_create_issue.componentName`, because the model
+  kept copying the prefixed name out of the related issues it had just read.
 - **Live E2E verified**: alert-triggered RCA → remediation → handoff → GitHub issue
-  `demoservices474#5` (correct title, labels, real telemetry in body) → `dispatch-from-issue` →
-  coding-agent Job running. `classification=mixed` was correct (2 revised config actions +
-  1 suggested code action → single issue for the code part).
+  `demoservices474#5` (correct title, labels, real telemetry in body) → coding-agent Job running.
+  `classification=mixed` was correct (2 revised config actions + 1 suggested code action → single
+  issue for the code part). Verified when dispatch was still a second call
+  (`dispatch-from-issue`); the same loop now completes on `ae_create_issue` alone.
 
 ### Resolved
 
@@ -370,13 +418,15 @@ server) — noted here so we can pivot without redesign.
    (via its own generation flow) — not for components deployed by other means that happen to share
    a name. This is a reasonable v1 scope boundary (AE-created components are exactly what an
    SRE/RCA agent would be filing a code-level issue against), but worth stating explicitly:
-   `ae_dispatch_coding_agent` will fail with "ensure OC component: resolve component: ..." for any
-   other component.
+   `ae_create_issue` will fail with "ensure OC component: resolve component: ..." for any other
+   component — a 400 naming the component, before the issue is filed.
 ---
 
 ## 12. Build order (as executed)
 
-1. ~~AE A1~~ — REST endpoints for issue create/list + dispatch-from-issue. Done.
+1. ~~AE A1~~ — REST endpoints for issue create/list + dispatch-from-issue. Done; the
+   dispatch-from-issue endpoint was later retired when adoption moved into create-issue
+   (AEP ADR-0017).
 2. ~~AE A2~~ — TS MCP server wrapping A1. Done.
 3. ~~SRE B1–B5~~ — config + MCP client + tool registry + handoff stage + prompt + report model.
    Done, flag-gated (`AE_HANDOFF=false` default).
@@ -391,28 +441,36 @@ server) — noted here so we can pivot without redesign.
 
 ## 14. Enabling the handoff on a k3d OC + docker-compose AE stack (as tested)
 
-1. Build the SRE-agent image from this repo (includes the handoff code) and import it:
-   `docker build -t openchoreo-sre-agent:handoff .` → `k3d image import openchoreo-sre-agent:handoff -c <cluster>`.
+1. Build the SRE-agent image from this repo (includes the handoff code) and import it. Use the
+   FULLY QUALIFIED name AEP's installers default to, so a later `setup-observability.sh` run
+   picks up this local build instead of pulling — an unqualified tag resolves to
+   `docker.io/library/<name>` once containerd evicts it, and fails:
+   `docker build -t tharindulak/sre-agent:hand0ff-new .` →
+   `k3d image import tharindulak/sre-agent:hand0ff-new -c <cluster>`.
 2. `kubectl patch cm rca-agent-config -n openchoreo-observability-plane --type=merge -p
    '{"data":{"AE_HANDOFF":"true","AE_AUTO_DISPATCH":"true","AE_API_URL":"http://host.k3d.internal:9090"}}'`
-   (`host.k3d.internal:9090` reaches the host's docker-compose `aep-api`; the agent appends
-   `/sre-mcp`.)
-3. `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=openchoreo-sre-agent:handoff"`.
+   (`AE_API_URL` must point at `aep-mcp-server` — `http://host.k3d.internal:3401` — and the
+   agent appends `AE_MCP_PATH`, default `/mcp`. `:9090` is aep-api's REST base, used only for
+   report publishing via `AEP_API_URL`; see §11 and finding F2.)
+3. `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=tharindulak/sre-agent:hand0ff-new"`.
 4. AE side: extend `aep-api`'s `JWT_AUDIENCE` with `openchoreo-rca-agent` (see §11) and
    `docker compose up -d aep-api`.
 5. Safety: ensure `ALERT_SUPPRESSION_WINDOW` is set in `observer-config` (see §11 race note),
    and remember the OC project/component must exist in AE (same project slug; AE-created
    component).
-6. Verify at agent startup: `MCP connection successful: loaded 102 tools` (99 + the 3 `ae_*`
-   tools), then trigger and watch for `Running handoff agent` → `Handoff completed:
-   classification=…, issue=…, dispatch=…` in the agent logs.
+6. Verify at agent startup: `MCP connection successful: loaded N tools` (the base set + the 2
+   `ae_*` tools), then trigger and watch for `Running handoff agent` → `Handoff completed:
+   classification=…, issue=…, adopted=…` in the agent logs.
 
 ## 13. Verification performed
 
-No unit-test suite existed for either "SRE unit-test the classification prompt" or "AE contract
-tests for the new endpoints" as originally planned below — instead, verification leaned on the
-existing toolchains plus live runtime checks, since both repos had working build/test
-infrastructure already in place:
+The originally planned "SRE unit-test the classification prompt" was overtaken: there is no
+classification prompt to test any more, because the classification is derived. What the SRE side
+does have now is `tests/test_classification.py` (the derivation table, the payload boundary, and
+the composer) and `tests/test_handoff_wrappers.py` (the code-enforced create-issue wrapper),
+alongside `test_fingerprint.py` and `test_skills.py`. "AE contract tests for the new endpoints"
+remains open. The rest of the verification leaned on the existing toolchains plus live runtime
+checks, since both repos had working build/test infrastructure already in place:
 
 - **SRE (Python):** import of `HANDOFF_AGENT`/`HandoffResult`/`AE_TOOLS`; config validator
   correctly rejects `AE_HANDOFF=true` without `AE_API_URL`; Jinja template renders correctly for

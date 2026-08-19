@@ -148,7 +148,7 @@ def build_create_report_request(report_data: dict[str, Any]) -> dict[str, Any]:
         # we have (HandoffResult carries no issue title/body).
         if rationale := handoff.get("rationale"):
             payload["issueExcerpt"] = str(rationale)[:_MAX_EXCERPT]
-        payload["dispatched"] = bool(handoff.get("dispatch_run_name"))
+        payload["dispatched"] = bool(handoff.get("adopted"))
 
     return payload
 

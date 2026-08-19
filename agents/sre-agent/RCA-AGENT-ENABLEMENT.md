@@ -312,8 +312,9 @@ Then hard‑reload the portal → the report appears for the component.
 ## 7. Optional: AE coding‑agent handoff (`AE_HANDOFF`)
 
 With the handoff feature enabled, an RCA whose recommendations include a **code‑level** fix
-additionally files a GitHub issue via the Agentic Engineer platform and (with
-`AE_AUTO_DISPATCH=true`) dispatches the AE coding agent against it. Setup, auth
+additionally files a GitHub issue via the Agentic Engineer platform. Filing IS the dispatch:
+with `AE_AUTO_DISPATCH=true` (the default) AEP adopts the issue as it creates it and a coding
+run picks it up; with `false` the issue is recorded and waits for a human. Setup, auth
 accommodation (`JWT_AUDIENCE`), the component‑naming rule, and the duplicate‑dispatch race
 warning (set `ALERT_SUPPRESSION_WINDOW`!) are documented in **`AE-HANDOFF-DESIGN.md` §11/§14**.
 Verified E2E on this stack 2026‑07‑03: alert → RCA → issue → coding‑agent PR flow.
