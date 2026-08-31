@@ -25,7 +25,11 @@ from src.agent.handoff_logic import (
     build_shortcut_result,
     classify_handoff_shortcut,
     compose_handoff_result,
+    correction_prompt,
     handoff_input,
+    unfiled_correction_prompt,
+    unfiled_despite_judgment,
+    unjustified_rulings,
     wrap_ae_tools_for_handoff,
 )
 from src.agent.middleware import (
@@ -451,27 +455,61 @@ async def run_analysis(
                             },
                         )
 
+                        # handoff_input, not report_data: the observability
+                        # recommendations are advice about future RCAs, not this
+                        # incident's fix, and they are the noise this stage must
+                        # not file issues for.
+                        messages: list[dict[str, Any]] = [
+                            {
+                                "role": "user",
+                                "content": json.dumps(handoff_input(report_data)),
+                            }
+                        ]
                         handoff_result_raw = await asyncio.wait_for(
-                            handoff_agent.ainvoke(
-                                {
-                                    "messages": [
-                                        {
-                                            "role": "user",
-                                            # handoff_input, not report_data: the
-                                            # observability recommendations are advice
-                                            # about future RCAs, not this incident's
-                                            # fix, and they are the noise this stage
-                                            # must not file issues for.
-                                            "content": json.dumps(handoff_input(report_data)),
-                                        }
-                                    ],
-                                }
-                            ),
+                            handoff_agent.ainvoke({"messages": messages}),
                             timeout=settings.analysis_timeout_seconds,
                         )
+                        judgment = handoff_result_raw["structured_response"]
+
+                        # Two ways this stage can end with no issue, and both
+                        # drop the incident for good — nothing retries a handoff.
+                        # One looks like a decision (declining on grounds that do
+                        # not hold); the other looks like agreement (concluding a
+                        # code change is needed and then filing nothing). Each
+                        # earns exactly one more look with the gap named. Once: a
+                        # second correction would be arguing, not checking.
+                        failures = unjustified_rulings(judgment, recommended_actions)
+                        correction = correction_prompt(failures) if failures else ""
+                        if not failures:
+                            failures = unfiled_despite_judgment(judgment, handoff_outcome)
+                            correction = unfiled_correction_prompt() if failures else ""
+                        if failures:
+                            logger.warning(
+                                "Handoff produced no issue and its own answer does not "
+                                "support that; asking once more. %s",
+                                "; ".join(failures),
+                            )
+                            messages.append({"role": "assistant", "content": judgment.rationale})
+                            messages.append({"role": "user", "content": correction})
+                            handoff_result_raw = await asyncio.wait_for(
+                                handoff_agent.ainvoke({"messages": messages}),
+                                timeout=settings.analysis_timeout_seconds,
+                            )
+                            judgment = handoff_result_raw["structured_response"]
+                            still = unjustified_rulings(
+                                judgment, recommended_actions
+                            ) or unfiled_despite_judgment(judgment, handoff_outcome)
+                            if still:
+                                # Left as the model decided. The grounds are on
+                                # the report either way, so a human reading the
+                                # alert can see what was dropped and why.
+                                logger.warning(
+                                    "Handoff still produced no issue after correction: %s",
+                                    "; ".join(still),
+                                )
 
                         handoff_report = compose_handoff_result(
-                            handoff_result_raw["structured_response"],
+                            judgment,
                             recommended_actions,
                             handoff_outcome,
                         )

@@ -109,6 +109,10 @@ def _render_diagnosis(report_data: dict[str, Any]) -> str:
                 lines.append(f"  {rationale}")
         lines.append("")
 
+    # Before the timeline on purpose: this string is truncated from the end, so
+    # the decision has to outrank the supporting evidence.
+    lines.extend(_render_handoff_decision(report_data))
+
     timeline = result.get("timeline") or []
     if timeline:
         lines.append("## Timeline")
@@ -118,6 +122,71 @@ def _render_diagnosis(report_data: dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip()[:_MAX_DIAGNOSIS]
+
+
+def _render_handoff_decision(report_data: dict[str, Any]) -> list[str]:
+    """Render the handoff's own reasoning as Markdown lines.
+
+    The handoff decides whether an incident becomes coding-agent work, and on a
+    DECLINE that decision is the most consequential thing on the page: no issue
+    is filed, so nothing is ever dispatched (ADR-0017 — filing an issue IS the
+    dispatch). That reasoning used to die here. ``rationale`` was published only
+    inside the ``issue_number is not None`` branch of
+    ``build_create_report_request`` — exactly the branch a decline does not take
+    — and ``ruled_out`` / ``related_issues`` were never published at all. The
+    console was left asserting "the handoff found no actionable remediation"
+    directly beneath remediation's own list of code changes it wanted, with
+    nothing to back it. Right or wrong, that reads as an incident the platform
+    dropped.
+
+    This goes into ``diagnosis`` rather than new API fields deliberately.
+    ``diagnosis`` is already contracted as the full RCA + remediation content in
+    Markdown and the console already renders it, so the reasoning reaches a
+    human with no contract change, no migration, and no coordinated aep-api and
+    console deploy. Structured fields belong in a later change that can surface
+    this in the Issue Created stage, where the bare assertion actually lives.
+    """
+    handoff = report_data.get("handoff") or {}
+    if not handoff:
+        return []
+
+    actions = ((report_data.get("result") or {}).get("recommendations") or {}).get(
+        "recommended_actions"
+    ) or []
+
+    lines = ["## Handoff decision", ""]
+    lines.append(f"**Classification:** {_classification(report_data)}")
+    if handoff.get("created_issue_number") is None:
+        lines.append("")
+        lines.append("No issue was filed for this alert, so no coding agent was dispatched.")
+    lines.append("")
+
+    if rationale := handoff.get("rationale"):
+        lines.append(str(rationale))
+        lines.append("")
+
+    if ruled_out := handoff.get("ruled_out") or []:
+        lines.append("### Recommended actions ruled out")
+        for entry in ruled_out:
+            index = entry.get("index")
+            description = ""
+            if isinstance(index, int) and 0 <= index < len(actions):
+                description = str(actions[index].get("description") or "")
+            lines.append(f"- **{description or f'action[{index}]'}**")
+            lines.append(
+                f"  _{entry.get('reason') or 'unspecified'}_ — {entry.get('justification') or ''}"
+            )
+        lines.append("")
+
+    if related := handoff.get("related_issues") or []:
+        lines.append("### Related issues")
+        for issue in related:
+            label = f"#{issue.get('number')} {issue.get('title') or ''}".strip()
+            url = str(issue.get("url") or "")
+            lines.append(f"- [{label}]({url})" if url else f"- {label}")
+        lines.append("")
+
+    return lines
 
 
 def build_create_report_request(report_data: dict[str, Any]) -> dict[str, Any]:
@@ -149,6 +218,13 @@ def build_create_report_request(report_data: dict[str, Any]) -> dict[str, Any]:
         if rationale := handoff.get("rationale"):
             payload["issueExcerpt"] = str(rationale)[:_MAX_EXCERPT]
         payload["dispatched"] = bool(handoff.get("adopted"))
+        # Which attempt this is. Sent only when AE established it, because 0 on
+        # the wire means "unknown" and claiming a first attempt on behalf of an
+        # answer that did not carry one would be a guess. Above 1 it tells
+        # whoever is triaging that a fix already merged for this incident did
+        # not work — a different situation from a new bug.
+        if recurrence := handoff.get("recurrence"):
+            payload["recurrence"] = int(recurrence)
 
     return payload
 
@@ -169,7 +245,10 @@ def should_publish_report(report_data: dict[str, Any]) -> tuple[bool, str]:
     """
     handoff = report_data.get("handoff") or {}
     if handoff.get("deduped"):
-        return False, "handoff deduped onto an existing issue (already reported by its creating run)"
+        return (
+            False,
+            "handoff deduped onto an existing issue (already reported by its creating run)",
+        )
     return True, ""
 
 

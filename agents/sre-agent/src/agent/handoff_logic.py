@@ -31,7 +31,12 @@ from langchain_core.tools import BaseTool, StructuredTool
 from src.agent.fingerprint import error_fingerprint
 from src.agent.tool_registry import TOOLS
 from src.helpers import AlertScope
-from src.models.handoff_result import HandoffClassification, HandoffJudgment, HandoffResult
+from src.models.handoff_result import (
+    HandoffClassification,
+    HandoffJudgment,
+    HandoffResult,
+    RuledOutReason,
+)
 from src.models.remediation_result import ActionStatus
 
 logger = logging.getLogger(__name__)
@@ -202,6 +207,140 @@ def handoff_input(report_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def unfiled_despite_judgment(
+    judgment: HandoffJudgment, outcome: dict[str, Any] | None
+) -> list[str]:
+    """Catch the opposite failure to a bad decline: the agent concluded a code
+    change IS needed and then filed nothing.
+
+    Both failures end identically — no issue, and nothing retries a handoff — but
+    only one of them looks like a decision. This one looks like agreement, which
+    is what makes it easy to miss: the report says `code_level`, the console
+    shows a classification, and there is no issue behind any of it.
+
+    The signal is `called`, not the issue number. A create that was attempted and
+    answered unreadably is a filing that probably happened; treating it as "never
+    filed" would ask the model to file a second time. The dedupe key would fold
+    the duplicate onto the first issue, but the run would still be reasoning from
+    a false premise.
+
+    One legitimate case produces the same shape and is deliberately NOT caught
+    here: a clearly matching OPEN issue is already the handoff for this problem,
+    so the skill says leave the judgment true, name that issue and file nothing.
+    The correction below asks for exactly that, which lets the model say so
+    rather than being forced into a duplicate.
+    """
+    if not judgment.needs_code_change:
+        return []
+    if outcome and outcome.get("called"):
+        return []
+    return [
+        "you concluded that a code change IS required, but ae_create_issue was never "
+        "called, so nothing was filed and nothing will work this incident"
+    ]
+
+
+def unfiled_correction_prompt() -> str:
+    """The message sent when a judgment of "code change needed" filed nothing.
+
+    Like the decline correction it names the gap rather than dictating the
+    outcome — there IS a case where filing nothing is right, and the prompt has
+    to leave room for it or it would manufacture duplicate issues.
+    """
+    return (
+        "You decided this root cause needs a code change, but you did not call "
+        "ae_create_issue, so nothing was filed and no coding agent will ever see this "
+        "incident. Deciding is not the deliverable; the issue is.\n\n"
+        "File it now. The one exception is a clearly matching OPEN issue that is already "
+        "the handoff for this problem — if that is what you found, name it in "
+        "related_issues and say in your rationale that it covers this. A CLOSED issue is "
+        "not that exception: it means an earlier fix did not hold, and this still needs "
+        "filing."
+    )
+
+
+def correction_prompt(failures: list[str]) -> str:
+    """The one message sent back when a decline does not hold up.
+
+    It names the specific failures rather than repeating the rules, and it does
+    NOT tell the model what to conclude — an instruction to "file an issue" would
+    buy compliance rather than judgment, and the point is that the second look is
+    a real one. It only removes the escape that was actually used: as-designed.
+    """
+    bullets = "\n".join(f"  - {f}" for f in failures)
+    return (
+        "Your decision not to file does not hold up against the actions you were given:\n"
+        f"{bullets}\n\n"
+        "Look again, action by action. An action that names something in the codebase to "
+        "change — logic, error handling, a timeout, a retry, a hardcoded value, an "
+        "artificial delay — needs a code change, and that stays true when the behaviour "
+        "is DELIBERATE: making it configurable or adding backoff hardens it without "
+        "contradicting the spec. The platform's own implementation issues record what was "
+        "built and what must be preserved; they never rule a change out.\n\n"
+        "If a code change is warranted, file the issue now and say in it which behaviour "
+        "must be preserved. If you still rule every action out, map each one to "
+        "config_handled or pure_advice with a justification specific to that action."
+    )
+
+
+def unjustified_rulings(
+    judgment: HandoffJudgment, recommended_actions: list[dict[str, Any]]
+) -> list[str]:
+    """Check a DECLINE against the data it was made over, and name what does not
+    hold. An empty list means the decline is justified.
+
+    Why this exists. `needs_code_change` is the one input the model owns, and it
+    is owned for a good reason — no status field can express "this recommendation
+    is a nicety, not a defect". But owning a judgment is not the same as being
+    unaccountable for it, and the failure this catches was real: an RCA whose
+    remediation asked to "remove the artificial delay in service2" was declined
+    wholesale because the delay was deliberate and the platform's own
+    implementation issues described it. One sentence about the incident silently
+    dropped an action that named source code to change.
+
+    So the model still decides, but it decides PER ACTION and shows its working,
+    and two of the things it can claim are checkable without a model:
+
+      - Every remaining action must be accounted for. An action nobody mentioned
+        is an action nobody ruled out.
+      - `config_handled` is a claim about remediation's own output, so it is only
+        true of a `revised` action. Claiming it for a `suggested` one asserts a
+        ReleaseBinding change that does not exist.
+
+    `pure_advice` is deliberately NOT checked. It is the subjective half, and
+    the whole reason a model is asked at all — but it now has to be asserted
+    against a specific action, in writing, which is a far harder thing to do
+    accidentally than agreeing that a system works as designed.
+
+    Returns human-readable failures, in action order, for the correction prompt
+    and for the report.
+    """
+    if judgment.needs_code_change:
+        return []
+
+    by_index = {r.index: r for r in judgment.ruled_out}
+    failures: list[str] = []
+    for i, action in enumerate(recommended_actions):
+        description = str(action.get("description") or "").strip()
+        summary = (description[:160] + "…") if len(description) > 160 else description
+        ruling = by_index.get(i)
+        if ruling is None:
+            failures.append(
+                f"action[{i}] was not ruled out at all, so nothing justifies dropping it: {summary!r}"
+            )
+            continue
+        if (
+            ruling.reason == RuledOutReason.CONFIG_HANDLED
+            and action.get("status") != ActionStatus.REVISED
+        ):
+            failures.append(
+                f"action[{i}] was called {RuledOutReason.CONFIG_HANDLED} but its status is "
+                f"{action.get('status') or 'absent'}, not {ActionStatus.REVISED} — remediation "
+                f"produced no configuration change for it: {summary!r}"
+            )
+    return failures
+
+
 def derive_classification(
     needs_code_change: bool, recommended_actions: list[dict[str, Any]]
 ) -> HandoffClassification:
@@ -236,9 +375,12 @@ def compose_handoff_result(
 
     The split is the point. `rationale` and `related_issues` are the model's and
     are copied verbatim. `classification` is derived. The issue number, url,
-    dedupe and adoption state are stamped from the wire, because the console's
-    Alerts list serves them as-is — a model restating one loosely would show a
-    human the wrong state while they triage an incident.
+    dedupe, recurrence and adoption state are stamped from the wire, because the
+    console's Alerts list serves them as-is — a model restating one loosely would
+    show a human the wrong state while they triage an incident. `reopened` and
+    `recurrence` matter most of all here: they say a fix AE already merged for
+    this incident did not work, which is the one fact a reader must not get from
+    a paraphrase.
 
     An empty outcome means `ae_create_issue` was never called: the model declined
     to file, or a matching open issue made filing unnecessary. Either way there is
@@ -251,7 +393,10 @@ def compose_handoff_result(
         related_issues=judgment.related_issues,
         created_issue_number=outcome.get("number"),
         created_issue_url=outcome.get("url"),
+        ruled_out=judgment.ruled_out,
         deduped=bool(outcome.get("deduped")),
+        reopened=bool(outcome.get("reopened")),
+        recurrence=int(outcome.get("recurrence") or 0),
         adopted=bool(outcome.get("adopted")),
         adoption_error=outcome.get("adoption_error"),
     )
@@ -295,12 +440,91 @@ def wrap_ae_tools_for_handoff(
     # before it will adopt the issue.
     design_component = design_component_name(scope.component, scope.project)
 
-    return [
-        _wrap_create_issue(tool, dedupe_key, design_component, auto_dispatch, outcome)
-        if tool.name == TOOLS.AE_CREATE_ISSUE
-        else tool
-        for tool in tools
-    ]
+    wrapped: list[BaseTool] = []
+    for tool in tools:
+        if tool.name == TOOLS.AE_CREATE_ISSUE:
+            wrapped.append(
+                _wrap_create_issue(tool, dedupe_key, design_component, auto_dispatch, outcome)
+            )
+        elif tool.name == TOOLS.AE_SEARCH_RELATED_ISSUES:
+            wrapped.append(_wrap_search_related_issues(tool))
+        else:
+            wrapped.append(tool)
+    return wrapped
+
+
+# The label AE puts on its own planned work. An issue carrying it was written by
+# the platform to describe what to BUILD, so it is a record of the spec — which
+# is exactly what makes it dangerous to read as evidence that nothing is wrong.
+PLATFORM_WORK_LABEL = "aep"
+
+# Attached to every such issue in the search result. The skill says the same
+# thing in prose; this says it at the point of use, in the document the model is
+# reading, because prose in a skill did not survive contact with an issue titled
+# "Implement service2 slow backend" while the model was deciding whether a slow
+# service2 was a defect.
+PLATFORM_ISSUE_NOTE = (
+    "PLATFORM IMPLEMENTATION RECORD — this issue is AE's own plan for what to BUILD. "
+    "It tells you which behaviour must be PRESERVED. It is not a defect report and it "
+    "is never grounds for ruling out a code change: behaviour can be deliberate and "
+    "still be worth hardening."
+)
+
+
+def annotate_platform_issues(issues: list[Any]) -> list[Any]:
+    """Stamp AE's own implementation issues with what they are.
+
+    Pure and list-shaped so it can be tested without a tool: the wrapper below is
+    only plumbing. Anything that is not a dict, or carries no labels, is passed
+    through untouched — a search result is the other side's shape, and mangling
+    an unexpected record would cost more than the annotation gains.
+    """
+    out: list[Any] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            out.append(issue)
+            continue
+        labels = issue.get("Labels") or issue.get("labels") or []
+        if isinstance(labels, list) and any(
+            isinstance(label, str) and label.strip().lower() == PLATFORM_WORK_LABEL
+            for label in labels
+        ):
+            issue = {**issue, "PlatformRecord": True, "ReadAs": PLATFORM_ISSUE_NOTE}
+        out.append(issue)
+    return out
+
+
+def _wrap_search_related_issues(tool: BaseTool) -> BaseTool:
+    """Wrap `ae_search_related_issues` so AE's own planned-work issues arrive
+    labelled as the spec record they are.
+
+    This is the same discipline `_wrap_create_issue` follows: what the model must
+    not get wrong is guaranteed in CODE rather than asked for in a prompt. An
+    unreadable result is returned untouched — the annotation is a help, and
+    losing the search entirely to a parse error would be a far worse trade.
+    """
+
+    async def _run(**kwargs: Any) -> str:
+        raw = await tool.ainvoke(kwargs)
+        try:
+            parsed = _parse_tool_result(raw)
+        except (TypeError, ValueError, AttributeError, json.JSONDecodeError):
+            # A search answers with an ARRAY, so a bare list of issue records is
+            # a shape _parse_tool_result rejects (it looks for content blocks).
+            # That is this tool's normal answer, not an error.
+            if isinstance(raw, list) and all(isinstance(item, dict) for item in raw):
+                return json.dumps(annotate_platform_issues(raw))
+            return raw
+        if not isinstance(parsed, list):
+            return raw
+        return json.dumps(annotate_platform_issues(parsed))
+
+    return StructuredTool.from_function(
+        coroutine=_run,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+    )
 
 
 def _wrap_create_issue(
@@ -321,6 +545,14 @@ def _wrap_create_issue(
             labels.append(SRE_AGENT_LABEL)
         kwargs["labels"] = labels
 
+        if outcome is not None:
+            # Stamped BEFORE the call, and separately from the answer, because
+            # the two say different things: `called` means the agent actually
+            # tried to file, while the fields below mean AE answered. An attempt
+            # whose answer could not be parsed is still an attempt, and must not
+            # be mistaken for an agent that never filed at all.
+            outcome["called"] = True
+
         raw = await tool.ainvoke(kwargs)
         if outcome is not None:
             try:
@@ -330,6 +562,8 @@ def _wrap_create_issue(
                         "number": result.get("number"),
                         "url": result.get("url"),
                         "deduped": bool(result.get("deduped")),
+                        "reopened": bool(result.get("reopened")),
+                        "recurrence": int(result.get("recurrence") or 0),
                         "adopted": bool(result.get("adopted")),
                         "adoption_error": result.get("adoptionError") or None,
                     }
