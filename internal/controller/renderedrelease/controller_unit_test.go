@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -380,6 +381,103 @@ func TestHasTransitioningResources(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := r.hasTransitioningResources(tt.resources)
+			if got != tt.want {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// hasResurrectableWorkload
+// ─────────────────────────────────────────────────────────────
+
+func TestHasResurrectableWorkload(t *testing.T) {
+	// desired is a rendered manifest carrying its GVK + resource-ID label; live is the object
+	// fetched back from the plane (no GVK on list items) sharing the same resource-ID label.
+	desired := func(resID string, gvk schema.GroupVersionKind) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		u.SetLabels(map[string]string{labels.LabelKeyRenderedReleaseResourceID: resID})
+		return u
+	}
+	deploymentGVK := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}
+	statefulSetGVK := schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "StatefulSet"}
+	liveDeployment := func(resID string, replicas *int32, paused bool) *unstructured.Unstructured {
+		u := toUnstructured(t, &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Replicas: replicas, Paused: paused}})
+		u.SetLabels(map[string]string{labels.LabelKeyRenderedReleaseResourceID: resID})
+		return u
+	}
+	liveStatefulSet := func(resID string, replicas *int32) *unstructured.Unstructured {
+		u := toUnstructured(t, &appsv1.StatefulSet{Spec: appsv1.StatefulSetSpec{Replicas: replicas}})
+		u.SetLabels(map[string]string{labels.LabelKeyRenderedReleaseResourceID: resID})
+		return u
+	}
+	serviceGVK := schema.GroupVersionKind{Version: "v1", Kind: "Service"}
+
+	tests := []struct {
+		name    string
+		desired []*unstructured.Unstructured
+		live    []*unstructured.Unstructured
+		want    bool
+	}{
+		{
+			name: "empty resources returns false",
+			want: false,
+		},
+		{
+			name:    "deployment scaled to zero returns true",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK)},
+			live:    []*unstructured.Unstructured{liveDeployment("d1", int32Ptr(0), false)},
+			want:    true,
+		},
+		{
+			name:    "paused deployment at zero returns false",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK)},
+			live:    []*unstructured.Unstructured{liveDeployment("d1", int32Ptr(0), true)},
+			want:    false,
+		},
+		{
+			name:    "deployment with replicas returns false",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK)},
+			live:    []*unstructured.Unstructured{liveDeployment("d1", int32Ptr(2), false)},
+			want:    false,
+		},
+		{
+			name:    "deployment without replicas field returns false",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK)},
+			live:    []*unstructured.Unstructured{liveDeployment("d1", nil, false)},
+			want:    false,
+		},
+		{
+			name:    "statefulset scaled to zero returns true",
+			desired: []*unstructured.Unstructured{desired("s1", statefulSetGVK)},
+			live:    []*unstructured.Unstructured{liveStatefulSet("s1", int32Ptr(0))},
+			want:    true,
+		},
+		{
+			name:    "non-workload kind at zero returns false",
+			desired: []*unstructured.Unstructured{desired("svc", serviceGVK)},
+			live:    nil,
+			want:    false,
+		},
+		{
+			name:    "no matching live resource returns false",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK)},
+			live:    nil,
+			want:    false,
+		},
+		{
+			name:    "mix with a scaled-to-zero deployment returns true",
+			desired: []*unstructured.Unstructured{desired("d1", deploymentGVK), desired("d2", deploymentGVK)},
+			live:    []*unstructured.Unstructured{liveDeployment("d1", int32Ptr(1), false), liveDeployment("d2", int32Ptr(0), false)},
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasResurrectableWorkload(tt.desired, tt.live)
 			if got != tt.want {
 				t.Errorf("expected %v, got %v", tt.want, got)
 			}
@@ -1093,76 +1191,122 @@ func TestMakeDesiredResources(t *testing.T) {
 
 func TestMakeDesiredNamespaces(t *testing.T) {
 	r := &Reconciler{}
-	release := &openchoreov1alpha1.RenderedRelease{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-release", Namespace: "cp-ns", UID: "uid-xyz"},
-		Spec: openchoreov1alpha1.RenderedReleaseSpec{
-			EnvironmentName: "prod-env",
-			Owner:           openchoreov1alpha1.RenderedReleaseOwner{ProjectName: "proj-alpha"},
-		},
+
+	makeObjInNamespace := func(namespace string) *unstructured.Unstructured {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"})
+		if namespace != "" {
+			obj.SetNamespace(namespace)
+		}
+		return obj
 	}
 
-	t.Run("cluster-scoped resources produce no namespaces", func(t *testing.T) {
-		obj := &unstructured.Unstructured{}
-		obj.SetNamespace("") // cluster-scoped
-		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{obj})
-		if len(result) != 0 {
-			t.Errorf("expected 0 namespaces, got %d", len(result))
-		}
-	})
-
-	t.Run("empty resources returns empty", func(t *testing.T) {
+	t.Run("empty resources returns empty slice", func(t *testing.T) {
+		release := &openchoreov1alpha1.RenderedRelease{}
 		result := r.makeDesiredNamespaces(release, nil)
 		if len(result) != 0 {
 			t.Errorf("expected 0, got %d", len(result))
 		}
 	})
 
-	t.Run("namespaced resource produces namespace with correct labels", func(t *testing.T) {
-		obj := &unstructured.Unstructured{}
-		obj.SetNamespace("dp-target-ns")
-		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{obj})
+	t.Run("resources with empty namespace are skipped", func(t *testing.T) {
+		release := &openchoreov1alpha1.RenderedRelease{}
+		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{
+			makeObjInNamespace(""),
+			makeObjInNamespace(""),
+		})
+		if len(result) != 0 {
+			t.Errorf("expected 0 (cluster-scoped resources skipped), got %d", len(result))
+		}
+	})
+
+	t.Run("distinct namespaces are deduplicated", func(t *testing.T) {
+		release := &openchoreov1alpha1.RenderedRelease{}
+		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{
+			makeObjInNamespace("ns-a"),
+			makeObjInNamespace("ns-a"),
+			makeObjInNamespace("ns-b"),
+			makeObjInNamespace(""),
+		})
+		if len(result) != 2 {
+			t.Fatalf("expected 2 deduplicated namespaces, got %d", len(result))
+		}
+		names := map[string]bool{}
+		for _, ns := range result {
+			names[ns.Name] = true
+		}
+		if !names["ns-a"] || !names["ns-b"] {
+			t.Errorf("expected ns-a and ns-b, got %v", names)
+		}
+	})
+
+	t.Run("labels populated from the release", func(t *testing.T) {
+		release := &openchoreov1alpha1.RenderedRelease{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-release", Namespace: "cp-ns", UID: "uid-xyz"},
+			Spec: openchoreov1alpha1.RenderedReleaseSpec{
+				EnvironmentName: "dev",
+				Owner:           openchoreov1alpha1.RenderedReleaseOwner{ProjectName: "my-project"},
+			},
+		}
+		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{makeObjInNamespace("op-ns")})
 		if len(result) != 1 {
-			t.Fatalf("expected 1 namespace, got %d", len(result))
+			t.Fatalf("expected 1, got %d", len(result))
 		}
 		ns := result[0]
-		if ns.Name != "dp-target-ns" {
-			t.Errorf("expected namespace name dp-target-ns, got %s", ns.Name)
+		if ns.Name != "op-ns" {
+			t.Errorf("expected namespace name op-ns, got %s", ns.Name)
 		}
-		checkLabels := map[string]string{
+		checks := map[string]string{
 			labels.LabelKeyCreatedBy:                ControllerName,
 			labels.LabelKeyRenderedReleaseName:      "my-release",
 			labels.LabelKeyRenderedReleaseNamespace: "cp-ns",
 			labels.LabelKeyRenderedReleaseUID:       "uid-xyz",
 			labels.LabelKeyNamespaceName:            "cp-ns",
-			labels.LabelKeyEnvironmentName:          "prod-env",
-			labels.LabelKeyProjectName:              "proj-alpha",
+			labels.LabelKeyEnvironmentName:          "dev",
+			labels.LabelKeyProjectName:              "my-project",
 		}
-		for key, want := range checkLabels {
+		for key, want := range checks {
 			if got := ns.Labels[key]; got != want {
-				t.Errorf("namespace label %s: expected %q, got %q", key, want, got)
+				t.Errorf("label %s: expected %q, got %q", key, want, got)
 			}
 		}
 	})
+}
 
-	t.Run("multiple resources in same namespace produces one namespace", func(t *testing.T) {
-		obj1 := &unstructured.Unstructured{}
-		obj1.SetNamespace("shared-ns")
-		obj2 := &unstructured.Unstructured{}
-		obj2.SetNamespace("shared-ns")
-		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{obj1, obj2})
-		if len(result) != 1 {
-			t.Errorf("expected 1 unique namespace, got %d", len(result))
+// ─────────────────────────────────────────────────────────────
+// ensureNamespaces
+// ─────────────────────────────────────────────────────────────
+
+func TestEnsureNamespaces(t *testing.T) {
+	ctx := context.Background()
+	r := &Reconciler{}
+
+	makeNamespace := func(name string) *corev1.Namespace {
+		return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	}
+
+	t.Run("creates namespace that does not exist", func(t *testing.T) {
+		cl := fake.NewClientBuilder().Build()
+		if err := r.ensureNamespaces(ctx, cl, []*corev1.Namespace{makeNamespace("new-ns")}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		got := &corev1.Namespace{}
+		if err := cl.Get(ctx, client.ObjectKey{Name: "new-ns"}, got); err != nil {
+			t.Errorf("expected namespace to be created: %v", err)
 		}
 	})
 
-	t.Run("resources in different namespaces produce separate namespace objects", func(t *testing.T) {
-		obj1 := &unstructured.Unstructured{}
-		obj1.SetNamespace("ns-1")
-		obj2 := &unstructured.Unstructured{}
-		obj2.SetNamespace("ns-2")
-		result := r.makeDesiredNamespaces(release, []*unstructured.Unstructured{obj1, obj2})
-		if len(result) != 2 {
-			t.Errorf("expected 2 namespaces, got %d", len(result))
+	t.Run("is idempotent when namespace already exists", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithObjects(makeNamespace("existing-ns")).Build()
+		if err := r.ensureNamespaces(ctx, cl, []*corev1.Namespace{makeNamespace("existing-ns")}); err != nil {
+			t.Fatalf("unexpected error for existing namespace: %v", err)
+		}
+	})
+
+	t.Run("empty list is a no-op", func(t *testing.T) {
+		cl := fake.NewClientBuilder().Build()
+		if err := r.ensureNamespaces(ctx, cl, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 }

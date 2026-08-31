@@ -11,11 +11,13 @@ import (
 	authzcore "github.com/openchoreo/openchoreo/internal/authz/core"
 	gatewayClient "github.com/openchoreo/openchoreo/internal/clients/gateway"
 	kubernetesClient "github.com/openchoreo/openchoreo/internal/clients/kubernetes"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/config"
 	authzsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/authz"
 	autobuildsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/autobuild"
 	clustercomponenttypesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clustercomponenttype"
 	clusterdataplanesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clusterdataplane"
 	clusterobservabilityplanesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clusterobservabilityplane"
+	clusterprojecttypesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clusterprojecttype"
 	clusterresourcetypesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clusterresourcetype"
 	clustertraitsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clustertrait"
 	clusterworkflowsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/clusterworkflow"
@@ -32,6 +34,9 @@ import (
 	observabilityalertsnotificationchannelsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/observabilityalertsnotificationchannel"
 	observabilityplanesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/observabilityplane"
 	projectsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/project"
+	projectreleasesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/projectrelease"
+	projectreleasebindingsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/projectreleasebinding"
+	projecttypesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/projecttype"
 	releasebindingsvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/releasebinding"
 	resourcesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/resource"
 	resourcereleasesvc "github.com/openchoreo/openchoreo/internal/openchoreo-api/services/resourcerelease"
@@ -51,11 +56,15 @@ type Services struct {
 	AutoBuildService                              autobuildsvc.Service
 	AuthzService                                  authzsvc.Service
 	ProjectService                                projectsvc.Service
+	ProjectTypeService                            projecttypesvc.Service
+	ProjectReleaseService                         projectreleasesvc.Service
+	ProjectReleaseBindingService                  projectreleasebindingsvc.Service
 	WorkflowPlaneService                          workflowplanesvc.Service
 	ClusterWorkflowPlaneService                   clusterworkflowplanesvc.Service
 	ClusterComponentTypeService                   clustercomponenttypesvc.Service
 	ClusterDataPlaneService                       clusterdataplanesvc.Service
 	ClusterObservabilityPlaneService              clusterobservabilityplanesvc.Service
+	ClusterProjectTypeService                     clusterprojecttypesvc.Service
 	ClusterResourceTypeService                    clusterresourcetypesvc.Service
 	ClusterTraitService                           clustertraitsvc.Service
 	ClusterWorkflowService                        clusterworkflowsvc.Service
@@ -84,16 +93,20 @@ type Services struct {
 }
 
 // NewServices creates all K8s-native API services with authorization wrappers.
-func NewServices(k8sClient client.Client, pap authzcore.PAP, pdp authzcore.PDP, planeClientProvider kubernetesClient.PlaneClientProvider, logger *slog.Logger, gwClient *gatewayClient.Client, webhookProcessor autobuildsvc.WebhookProcessor) *Services {
+func NewServices(k8sClient client.Client, pap authzcore.PAP, pdp authzcore.PDP, planeClientProvider kubernetesClient.PlaneClientProvider, secretCfg config.SecretManagementConfig, logger *slog.Logger, gwClient *gatewayClient.Client, webhookProcessor autobuildsvc.WebhookProcessor) *Services {
 	return &Services{
 		AutoBuildService:                              autobuildsvc.NewService(k8sClient, webhookProcessor, logger.With("component", "autobuild-service")),
 		AuthzService:                                  authzsvc.NewServiceWithAuthz(pap, pdp, logger.With("component", "authz-service")),
 		ProjectService:                                projectsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "project-service")),
+		ProjectTypeService:                            projecttypesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "projecttype-service")),
+		ProjectReleaseService:                         projectreleasesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "projectrelease-service")),
+		ProjectReleaseBindingService:                  projectreleasebindingsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "projectreleasebinding-service")),
 		WorkflowPlaneService:                          workflowplanesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "workflowplane-service")),
 		ClusterWorkflowPlaneService:                   clusterworkflowplanesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterworkflowplane-service")),
 		ClusterComponentTypeService:                   clustercomponenttypesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clustercomponenttype-service")),
 		ClusterDataPlaneService:                       clusterdataplanesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterdataplane-service")),
 		ClusterObservabilityPlaneService:              clusterobservabilityplanesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterobservabilityplane-service")),
+		ClusterProjectTypeService:                     clusterprojecttypesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterprojecttype-service")),
 		ClusterResourceTypeService:                    clusterresourcetypesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterresourcetype-service")),
 		ClusterTraitService:                           clustertraitsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clustertrait-service")),
 		ClusterWorkflowService:                        clusterworkflowsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "clusterworkflow-service")),
@@ -113,7 +126,7 @@ func NewServices(k8sClient client.Client, pap authzcore.PAP, pdp authzcore.PDP, 
 		ResourceReleaseService:                        resourcereleasesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "resourcerelease-service")),
 		ResourceReleaseBindingService:                 resourcereleasebindingsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "resourcereleasebinding-service")),
 		ResourceTypeService:                           resourcetypesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "resourcetype-service")),
-		SecretService:                                 secretsvc.NewServiceWithAuthz(k8sClient, planeClientProvider, pdp, logger.With("component", "secret-service")),
+		SecretService:                                 secretsvc.NewServiceWithAuthz(k8sClient, planeClientProvider, secretCfg, pdp, logger.With("component", "secret-service")),
 		SecretReferenceService:                        secretreferencesvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "secretreference-service")),
 		TraitService:                                  traitsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "trait-service")),
 		WorkflowService:                               workflowsvc.NewServiceWithAuthz(k8sClient, pdp, logger.With("component", "workflow-service")),

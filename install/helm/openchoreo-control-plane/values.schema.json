@@ -7,7 +7,7 @@
       "description": "Backstage UI configuration",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules",
           "required": [],
@@ -801,6 +801,31 @@
           "title": "nodeSelector",
           "type": "object"
         },
+        "observability": {
+          "additionalProperties": false,
+          "description": "Observability plane tuning for Backstage. Separate from the features.observability feature flag above — this controls runtime behaviour of observability views, not whether they are shown.",
+          "properties": {
+            "wirelogs": {
+              "additionalProperties": false,
+              "description": "Wirelogs (Cilium Hubble flow) stream tuning.",
+              "properties": {
+                "streamTimeoutSeconds": {
+                  "default": 900,
+                  "description": "Hard cap in seconds on a single wirelogs SSE stream before the Backstage backend ends it. The UI shows soft warnings at ~1/3 and ~2/3 of this value and a toast when the server stops the stream. Maps to OPENCHOREO_OBSERVABILITY_WIRELOGS_STREAM_TIMEOUT_SECONDS in the Backstage container.",
+                  "minimum": 1,
+                  "title": "streamTimeoutSeconds",
+                  "type": "integer"
+                }
+              },
+              "required": [],
+              "title": "wirelogs",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "observability",
+          "type": "object"
+        },
         "openchoreoApi": {
           "additionalProperties": false,
           "description": "OpenChoreo API connection configuration",
@@ -1094,6 +1119,37 @@
           "title": "affinity",
           "type": "object"
         },
+        "agentAuth": {
+          "additionalProperties": false,
+          "description": "Agent client-certificate authentication for the public listener (port 8443). Controls where the gateway reads the agent's client certificate that is then verified per plane CR. Defaults to end-to-end mTLS; switch to forwarded-header only when a trusted L7 proxy (e.g. AWS ALB, Envoy/Istio) terminates the agent's TLS and forwards the certificate in a header.",
+          "properties": {
+            "forwardedHeaderName": {
+              "default": "X-Forwarded-Client-Cert",
+              "description": "Request header carrying the URL-encoded client certificate chain when mode is forwarded-header. Use X-Amzn-Mtls-Clientcert for AWS ALB mTLS passthrough, or X-Forwarded-Client-Cert for Envoy/Istio XFCC.",
+              "title": "forwardedHeaderName",
+              "type": "string"
+            },
+            "mode": {
+              "default": "mtls",
+              "description": "Where the gateway reads the agent client certificate. 'mtls' takes it from the TLS handshake (requires TLS passthrough / L4 exposure to the gateway). 'forwarded-header' takes it from a header set by a trusted TLS-terminating proxy - only safe when the public listener is reachable exclusively from that proxy.",
+              "enum": [
+                "mtls",
+                "forwarded-header"
+              ],
+              "required": [],
+              "title": "mode"
+            }
+          },
+          "required": [],
+          "title": "agentAuth",
+          "type": "object"
+        },
+        "drainWindow": {
+          "default": "10s",
+          "description": "How long a draining gateway keeps agent connections open after sending GOAWAY, giving agents time to reconnect to a surviving replica before their sockets are closed. Must stay comfortably below terminationGracePeriodSeconds (30s).",
+          "title": "drainWindow",
+          "type": "string"
+        },
         "heartbeatInterval": {
           "default": "30s",
           "description": "Heartbeat interval for agent connections",
@@ -1138,6 +1194,39 @@
           "title": "image",
           "type": "object"
         },
+        "internalMtls": {
+          "additionalProperties": false,
+          "description": "mTLS enforcement for the cluster gateway internal API (port 8444). When enabled, a dedicated internal CA is created via cert-manager, client certificates are issued for openchoreo-api and controller-manager, and the gateway requires and verifies client certificates on all internal /api/* endpoints.",
+          "properties": {
+            "caSecretName": {
+              "default": "cluster-gateway-internal-ca",
+              "description": "Name of the secret holding the internal CA used to sign and verify internal API client certificates",
+              "title": "caSecretName",
+              "type": "string"
+            },
+            "clientCertDuration": {
+              "default": "2160h",
+              "description": "Internal API client certificate validity duration (90 days)",
+              "title": "clientCertDuration",
+              "type": "string"
+            },
+            "clientCertRenewBefore": {
+              "default": "360h",
+              "description": "Internal API client certificate renewal threshold (15 days before expiry)",
+              "title": "clientCertRenewBefore",
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Require and verify client certificates on the cluster gateway internal API. Disabling this restores unauthenticated access to the internal API - for development only.",
+              "title": "enabled",
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "title": "internalMtls",
+          "type": "object"
+        },
         "logLevel": {
           "default": "info",
           "description": "Log level",
@@ -1149,6 +1238,27 @@
           ],
           "required": [],
           "title": "logLevel"
+        },
+        "mesh": {
+          "additionalProperties": false,
+          "description": "Gateway mesh fabric configuration. The mesh replicates the agent connection registry across gateway replicas and forwards requests between them, allowing the gateway to scale horizontally behind an ordinary Service.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable the gateway mesh fabric. Required for replicas \u003e 1. Peers discover each other via the headless mesh Service's EndpointSlices; links are secured with mTLS using the gateway serving certificate.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "port": {
+              "default": 8445,
+              "description": "Gateway-to-gateway mesh listener port",
+              "title": "port",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "title": "mesh",
+          "type": "object"
         },
         "name": {
           "default": "cluster-gateway",
@@ -1164,6 +1274,31 @@
           "description": "Node selector",
           "required": [],
           "title": "nodeSelector",
+          "type": "object"
+        },
+        "podDisruptionBudget": {
+          "additionalProperties": false,
+          "description": "PodDisruptionBudget for the cluster gateway. Only created when replicas \u003e 1, so a singleton gateway does not block node drains.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Create a PodDisruptionBudget so voluntary disruptions (node drains, cluster upgrades) cannot evict every gateway replica at once.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "default": 1,
+              "description": "Minimum gateway pods that must stay available during voluntary disruptions. Accepts a count or a percentage string.",
+              "required": [],
+              "title": "minAvailable",
+              "type": [
+                "integer",
+                "string"
+              ]
+            }
+          },
+          "required": [],
+          "title": "podDisruptionBudget",
           "type": "object"
         },
         "podSecurityContext": {
@@ -1226,10 +1361,42 @@
           "title": "priorityClass",
           "type": "object"
         },
+        "readinessProbe": {
+          "additionalProperties": false,
+          "description": "Readiness probe timing. /ready reports 503 while draining and until the mesh registry has converged, so the probe needs to react quickly in both directions - a slow probe keeps a draining pod in Service endpoints and admits a fresh pod before it can route.",
+          "properties": {
+            "failureThreshold": {
+              "default": 2,
+              "description": "Consecutive failures before the pod leaves Service endpoints. Two avoids evicting a healthy pod on a single slow check while still reacting within ~10s.",
+              "title": "failureThreshold",
+              "type": "integer"
+            },
+            "initialDelaySeconds": {
+              "default": 2,
+              "description": "Delay before the first readiness check.",
+              "title": "initialDelaySeconds",
+              "type": "integer"
+            },
+            "periodSeconds": {
+              "default": 5,
+              "description": "How often readiness is checked. Bounds how long a draining pod keeps receiving traffic.",
+              "title": "periodSeconds",
+              "type": "integer"
+            },
+            "timeoutSeconds": {
+              "default": 2,
+              "description": "Per-check timeout.",
+              "title": "timeoutSeconds",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "title": "readinessProbe",
+          "type": "object"
+        },
         "replicas": {
           "default": 1,
-          "description": "Number of cluster gateway replicas. Must be 1 - the gateway holds cluster-agent WebSocket connections in process memory and cannot be horizontally scaled. Provide support in upcoming release.",
-          "maximum": 1,
+          "description": "Number of cluster gateway replicas. Values above 1 require the gateway mesh (clusterGateway.mesh.enabled), which replicates the connection registry across replicas and forwards requests between them.",
           "minimum": 1,
           "title": "replicas",
           "type": "integer"
@@ -1430,9 +1597,15 @@
             },
             "enabled": {
               "default": true,
-              "description": "Enable TLS",
+              "description": "Deprecated: has no effect. The cluster gateway has no plaintext listener - it always loads a serving certificate - so TLS resources are created unconditionally. MIGRATION: if you previously set this to false and supplied the certificate secret yourself, set clusterGateway.tls.existingSecret to that secret name instead. Otherwise cert-manager now issues into clusterGateway.tls.secretName and will overwrite a secret of that name that you created by hand. Will be removed in a future release.",
               "title": "enabled",
               "type": "boolean"
+            },
+            "existingSecret": {
+              "default": "",
+              "description": "Bring your own serving certificate. When set, the chart creates no cert-manager Issuer, CA or Certificate for the gateway and uses this secret instead. It must contain tls.crt, tls.key and ca.crt, and the certificate must be valid for the gateway Service DNS names and - when the mesh is enabled - the headless mesh Service DNS names, since mesh peers verify each other against ca.crt. Leave empty to let cert-manager issue everything.",
+              "title": "existingSecret",
+              "type": "string"
             },
             "issuerRef": {
               "additionalProperties": true,
@@ -1473,7 +1646,7 @@
             },
             "skipClientCertVerify": {
               "default": false,
-              "description": "Skip client certificate verification for agent connections (for single-cluster setups without mTLS)",
+              "description": "Deprecated: has no effect. Agent certificates are always verified per plane CR; use clusterGateway.internalMtls.enabled to control internal API verification. Will be removed in a future release.",
               "title": "skipClientCertVerify",
               "type": "boolean"
             }
@@ -1516,6 +1689,16 @@
           },
           "title": "tolerations",
           "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [],
@@ -1527,7 +1710,7 @@
       "description": "Controller Manager configuration - the main controller for OpenChoreo CRDs",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules for pod scheduling",
           "required": [],
@@ -1697,6 +1880,24 @@
                   "title": "caSecret",
                   "type": "string"
                 },
+                "clientCertPath": {
+                  "default": "/etc/cluster-gateway-client/tls.crt",
+                  "description": "Path to the client certificate used for mTLS to the cluster gateway internal API",
+                  "title": "clientCertPath",
+                  "type": "string"
+                },
+                "clientKeyPath": {
+                  "default": "/etc/cluster-gateway-client/tls.key",
+                  "description": "Path to the client private key used for mTLS to the cluster gateway internal API",
+                  "title": "clientKeyPath",
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "default": "controller-manager-cluster-gateway-client-tls",
+                  "description": "Name of the secret containing the controller-manager client certificate for the cluster gateway internal API",
+                  "title": "clientSecret",
+                  "type": "string"
+                },
                 "insecure": {
                   "default": false,
                   "description": "Skip TLS verification of the cluster gateway. For development only.",
@@ -1709,7 +1910,7 @@
               "type": "object"
             },
             "url": {
-              "default": "https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443",
+              "default": "https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8444",
               "description": "Cluster gateway service URL",
               "title": "url",
               "type": "string"
@@ -1841,6 +2042,13 @@
               "title": "args",
               "type": "array"
             },
+            "celCostLimit": {
+              "default": 2000000,
+              "description": "Maximum accumulated cost for a single CEL template expression. This is the controller's own built-in default, stated here so the bound is visible rather than implied; 0 also selects it. Raising it weakens the guard proportionally - the per-reconcile cost budget is derived from it - so treat it as an escape hatch for a legitimate template, not a tuning knob.",
+              "minimum": 0,
+              "title": "celCostLimit",
+              "type": "integer"
+            },
             "env": {
               "additionalProperties": false,
               "description": "Environment variables for the controller-manager",
@@ -1859,6 +2067,33 @@
               "required": [],
               "title": "env",
               "type": "object"
+            },
+            "logLevel": {
+              "default": "",
+              "description": "Log verbosity level for the controller-manager, passed as --zap-log-level.\nEmpty string leaves controller-runtime's zap default (debug) in place.\n",
+              "enum": [
+                "",
+                "debug",
+                "info",
+                "error",
+                "panic"
+              ],
+              "required": [],
+              "title": "logLevel"
+            },
+            "maxConcurrentReconciles": {
+              "default": 1,
+              "description": "Max concurrent reconciles per controller (manager-wide); raise (e.g. 10) to increase reconcile throughput at scale.",
+              "minimum": 1,
+              "title": "maxConcurrentReconciles",
+              "type": "integer"
+            },
+            "renderTimeout": {
+              "default": "0",
+              "description": "Deadline for each rendering step of a reconcile (Go duration, e.g. \"30s\"), applied to every step separately - a reconcile that renders more than once (manifests, outputs, each readyWhen) may spend it at each. \"0\" disables the deadline; CEL cost limits remain the primary bound. Invalid or negative durations are rejected.",
+              "pattern": "^(0|(([0-9]+([.][0-9]+)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$",
+              "title": "renderTimeout",
+              "type": "string"
             }
           },
           "required": [],
@@ -2341,6 +2576,14 @@
       "additionalProperties": false,
       "description": "Event-forwarder configuration — watches OpenChoreo Kubernetes resources via informers and forwards change-notification webhooks to subscribers (typically Backstage's events plugin) for near-real-time catalog updates.",
       "properties": {
+        "affinity": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Affinity rules for pod scheduling",
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
         "config": {
           "additionalProperties": false,
           "properties": {
@@ -2488,6 +2731,16 @@
           "title": "name",
           "type": "string"
         },
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Node selector for pod scheduling",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
+        },
         "podSecurityContext": {
           "additionalProperties": false,
           "properties": {
@@ -2592,6 +2845,26 @@
           ],
           "title": "serviceAccount",
           "type": "object"
+        },
+        "tolerations": {
+          "default": [],
+          "description": "Tolerations for pod scheduling",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "tolerations",
+          "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [
@@ -2618,6 +2891,12 @@
               "description": "Enable the Secret management API and Backstage UI for managing data-plane secrets.",
               "title": "enabled",
               "type": "boolean"
+            },
+            "remoteKeyPrefix": {
+              "default": "secret",
+              "description": "First segment of every key written to the external secret store, as in \u003cprefix\u003e/\u003cnamespace\u003e/\u003ctype\u003e/\u003cname\u003e. Set to an empty string to drop the segment. It must not equal the KV mount name that the ClusterSecretStore points at, otherwise external-secrets writes the value and its ownership metadata to two different paths and leaves a duplicate data-less entry per secret. This is an install-time setting, since changing it after secrets exist does not move existing entries.",
+              "title": "remoteKeyPrefix",
+              "type": "string"
             }
           },
           "required": [],
@@ -2654,6 +2933,12 @@
           "description": "Enable Gateway CR creation",
           "title": "enabled",
           "type": "boolean"
+        },
+        "gatewayClassName": {
+          "default": "kgateway",
+          "description": "GatewayClass name to reference in the Gateway CR",
+          "title": "gatewayClassName",
+          "type": "string"
         },
         "httpPort": {
           "default": 80,
@@ -2728,6 +3013,22 @@
           "required": [],
           "title": "commonLabels",
           "type": "object"
+        },
+        "imagePullSecrets": {
+          "default": [],
+          "description": "Image pull secrets applied to all first-party pods, for pulling images from authenticated private registries. Entries are LocalObjectReferences (name only).",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "imagePullSecrets",
+          "type": "array"
+        },
+        "imageRegistry": {
+          "default": "",
+          "description": "Registry override for all first-party container images. When set, it replaces the registry host of each image repository. May include a path (e.g. registry.example.com/ghcr.io) for path-preserving mirrors. Empty uses each image's default registry.",
+          "title": "imageRegistry",
+          "type": "string"
         }
       },
       "required": [],
@@ -2792,7 +3093,7 @@
       "description": "OpenChoreo API server configuration",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules",
           "required": [],
@@ -2938,6 +3239,24 @@
                   "title": "caSecret",
                   "type": "string"
                 },
+                "clientCertPath": {
+                  "default": "/etc/cluster-gateway-client/tls.crt",
+                  "description": "Path inside the pod where the client certificate for the cluster gateway internal API is mounted",
+                  "title": "clientCertPath",
+                  "type": "string"
+                },
+                "clientKeyPath": {
+                  "default": "/etc/cluster-gateway-client/tls.key",
+                  "description": "Path inside the pod where the client private key for the cluster gateway internal API is mounted",
+                  "title": "clientKeyPath",
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "default": "openchoreo-api-cluster-gateway-client-tls",
+                  "description": "Name of the secret containing the openchoreo-api client certificate for the cluster gateway internal API",
+                  "title": "clientSecret",
+                  "type": "string"
+                },
                 "insecure": {
                   "default": false,
                   "description": "Skip TLS verification of the cluster gateway. For development only.",
@@ -2950,7 +3269,7 @@
               "type": "object"
             },
             "url": {
-              "default": "https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443",
+              "default": "https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8444",
               "description": "Cluster gateway service URL the API server connects to",
               "title": "url",
               "type": "string"
@@ -2964,6 +3283,47 @@
           "additionalProperties": false,
           "description": "OpenChoreo API specific configuration. Shared settings come from global security.* values.",
           "properties": {
+            "audit": {
+              "additionalProperties": false,
+              "description": "Audit logging configuration",
+              "properties": {
+                "defaults": {
+                  "additionalProperties": false,
+                  "description": "Policy settings applied when no policies entry matches",
+                  "properties": {
+                    "publish": {
+                      "default": true,
+                      "description": "Emit an audit event by default",
+                      "title": "publish",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [],
+                  "title": "defaults",
+                  "type": "object"
+                },
+                "enabled": {
+                  "default": true,
+                  "description": "Enable audit event emission for state-modifying API requests",
+                  "title": "enabled",
+                  "type": "boolean"
+                },
+                "policies": {
+                  "default": [],
+                  "description": "Ordered, first-match-wins policy overrides. Each entry has a `match` selector and a `set` block of overrides. See the audit logging docs for the selector-admissibility rules enforced at startup.\n",
+                  "items": {
+                    "additionalProperties": true,
+                    "required": [],
+                    "type": "object"
+                  },
+                  "title": "policies",
+                  "type": "array"
+                }
+              },
+              "required": [],
+              "title": "audit",
+              "type": "object"
+            },
             "logging": {
               "additionalProperties": false,
               "description": "Logging configuration",
@@ -3017,9 +3377,11 @@
                     "project",
                     "component",
                     "deployment",
-                    "build"
+                    "build",
+                    "pe",
+                    "resource"
                   ],
-                  "description": "List of enabled MCP toolsets. Each toolset exposes a group of related operations. Allowed toolsets: namespace, project, component, deployment, build, pe",
+                  "description": "List of enabled MCP toolsets. Each toolset exposes a group of related operations. Allowed toolsets: namespace, project, component, deployment, build, pe, resource",
                   "items": {
                     "type": "string"
                   },
@@ -3086,8 +3448,14 @@
                   "properties": {
                     "bootstrap": {
                       "additionalProperties": false,
-                      "description": "Bootstrap default roles and mappings as CRDs during installation",
+                      "description": "Default authorization roles and bindings, upserted via a post-install/upgrade hook on every install and upgrade. Hand-edits made directly against these objects in the cluster do not survive the next upgrade; customize here instead.",
                       "properties": {
+                        "image": {
+                          "default": "registry.k8s.io/kubectl:v1.36.0",
+                          "description": "Container image for the authz bootstrap job. Only needs to run `kubectl apply`, so any kubectl image works; override for airgapped/mirrored registries.",
+                          "title": "image",
+                          "type": "string"
+                        },
                         "mappings": {
                           "default": [],
                           "description": "Default role-to-entitlement mappings to create at installation",
@@ -4061,6 +4429,14 @@
       "additionalProperties": false,
       "description": "Optional Portal Assistant chat agent. Disabled by default; enable to opt in.",
       "properties": {
+        "affinity": {
+          "additionalProperties": true,
+          "default": {},
+          "description": "Affinity rules for pod scheduling",
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
         "authConfigConfigMap": {
           "default": "",
           "title": "authConfigConfigMap",
@@ -4215,6 +4591,12 @@
         "llm": {
           "additionalProperties": false,
           "properties": {
+            "baseUrl": {
+              "default": "",
+              "description": "Optional OpenAI-compatible base URL. Set to route LLM calls through the\nai-gateway-agentgateway module (e.g. http://agentgateway-proxy.openchoreo-data-plane)\ninstead of the provider directly; the provider key is then managed at the\ngateway and the secret's PORTAL_ASSISTANT_LLM_API_KEY may be a placeholder.",
+              "title": "baseUrl",
+              "type": "string"
+            },
             "modelName": {
               "default": "",
               "title": "modelName",
@@ -4228,7 +4610,8 @@
           },
           "required": [
             "secretName",
-            "modelName"
+            "modelName",
+            "baseUrl"
           ],
           "title": "llm",
           "type": "object"
@@ -4237,6 +4620,16 @@
           "default": "portal-assistant",
           "title": "name",
           "type": "string"
+        },
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Node selector for pod scheduling",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
         },
         "replicas": {
           "default": 1,
@@ -4321,6 +4714,26 @@
           ],
           "title": "service",
           "type": "object"
+        },
+        "tolerations": {
+          "default": [],
+          "description": "Tolerations for pod scheduling",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "tolerations",
+          "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [
@@ -4463,6 +4876,25 @@
               "title": "jwksUrlTlsInsecureSkipVerify",
               "type": "boolean"
             },
+            "mcpOAuthScopes": {
+              "description": "OAuth scopes advertised by the MCP endpoint via the protected-resource metadata (RFC 9728) and the WWW-Authenticate 401 challenge. MCP clients prefer this list over the authorization server's scopes_supported, which can be over-broad (e.g. Cognito pool-level scopes).",
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "required": []
+              },
+              "title": "mcpOAuthScopes",
+              "type": "array"
+            },
             "tokenUrl": {
               "default": "http://thunder.openchoreo.invalid/oauth2/token",
               "description": "OIDC token endpoint URL",
@@ -4489,21 +4921,6 @@
       },
       "required": [],
       "title": "security",
-      "type": "object"
-    },
-    "waitJob": {
-      "additionalProperties": false,
-      "description": "Wait job configuration for Helm hooks",
-      "properties": {
-        "image": {
-          "default": "rancher/kubectl:v1.36.0",
-          "description": "Container image for wait jobs",
-          "title": "image",
-          "type": "string"
-        }
-      },
-      "required": [],
-      "title": "waitJob",
       "type": "object"
     },
     "webhookService": {

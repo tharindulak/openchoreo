@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/websocket"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
@@ -65,48 +66,116 @@ func (h *ExecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	componentName := parts[1]
 
 	query := r.URL.Query()
-	project := query.Get("project")
+	requestedProject := query.Get("project")
 	envName := query.Get("env")
 	container := query.Get("container")
+	podName := query.Get("pod")
 	commands := query["command"]
 	tty := query.Get("tty") == "true"
 	stdin := query.Get("stdin") == "true"
 
 	ctx := r.Context()
 	logger := h.logger.With("namespace", namespace, "component", componentName)
+	logger.Info("Exec request received", "env", envName, "pod", podName, "container", container)
 
-	// Authorize: check that the caller has component:exec permission.
+	// Authorize: check that the caller has component:exec permission for this environment.
 	if h.authzChecker == nil {
 		logger.Error("Authorization checker not configured")
 		http.Error(w, "authorization not configured", http.StatusInternalServerError)
 		return
 	}
-	{
-		if err := h.authzChecker.Check(ctx, svcpkg.CheckRequest{
-			Action:       authz.ActionExecComponent,
-			ResourceType: "component",
-			ResourceID:   componentName,
-			Hierarchy: authz.ResourceHierarchy{
-				Namespace: namespace,
-				Project:   project,
+
+	// Pin authorization and pod resolution to the component's real owning project
+	// rather than the caller-supplied `project`.
+	project, err := h.resolveComponentProject(ctx, namespace, componentName)
+	if err != nil {
+		status := http.StatusBadRequest
+		var infraErr *execInfraError
+		if errors.As(err, &infraErr) {
+			status = http.StatusServiceUnavailable
+		}
+		logger.Warn("Failed to resolve component for exec", "error", err)
+		http.Error(w, fmt.Sprintf("failed to resolve component: %v", err), status)
+		return
+	}
+	// Fail closed if the caller named a project that does not own the component.
+	// The generic forbidden message avoids disclosing the component's real owner.
+	if requestedProject != "" && requestedProject != project {
+		logger.Warn("requested project does not own the target component; denying exec",
+			"requestedProject", requestedProject, "ownerProject", project)
+		http.Error(w, "you do not have permission to exec into this component", http.StatusForbidden)
+		return
+	}
+
+	// Resolve the target environment before authorizing so per-environment exec
+	// conditions are evaluated against it (`env` may be omitted by the client).
+	effectiveEnv, err := h.resolveEnvName(ctx, namespace, project, envName)
+	if err != nil {
+		status := http.StatusBadRequest
+		var infraErr *execInfraError
+		if errors.As(err, &infraErr) {
+			status = http.StatusServiceUnavailable
+		}
+		logger.Warn("Failed to resolve environment for exec", "error", err)
+		http.Error(w, fmt.Sprintf("failed to resolve environment: %v", err), status)
+		return
+	}
+
+	if err := h.authzChecker.Check(ctx, svcpkg.CheckRequest{
+		Action:       authz.ActionExecComponent,
+		ResourceType: "component",
+		ResourceID:   componentName,
+		Hierarchy: authz.ResourceHierarchy{
+			Namespace: namespace,
+			Project:   project,
+			Component: componentName,
+		},
+		Context: authz.Context{
+			Resource: authz.ResourceAttribute{
+				Environment: svcpkg.FormatDualScopedResourceName(namespace, effectiveEnv, false),
 			},
-		}); err != nil {
-			if errors.Is(err, svcpkg.ErrForbidden) {
-				http.Error(w, "you do not have permission to exec into this component", http.StatusForbidden)
-				return
-			}
-			logger.Error("Authorization check failed", "error", err)
-			http.Error(w, "authorization check failed", http.StatusInternalServerError)
+		},
+	}); err != nil {
+		if errors.Is(err, svcpkg.ErrForbidden) {
+			http.Error(w, "you do not have permission to exec into this component", http.StatusForbidden)
 			return
 		}
+		logger.Error("Authorization check failed", "error", err)
+		http.Error(w, "authorization check failed", http.StatusInternalServerError)
+		return
 	}
 
 	// Resolve the pod to exec into
-	podInfo, err := h.resolvePod(ctx, namespace, componentName, project, envName)
+	podInfo, err := h.resolvePod(ctx, namespace, componentName, project, effectiveEnv, podName)
 	if err != nil {
-		logger.Error("Failed to resolve pod for exec", "error", err)
-		http.Error(w, fmt.Sprintf("failed to resolve pod: %v", err), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		var infraErr *execInfraError
+		if errors.As(err, &infraErr) {
+			logger.Error("Infrastructure error resolving pod for exec", "error", err)
+			status = http.StatusServiceUnavailable
+		} else {
+			logger.Warn("Failed to resolve pod for exec", "error", err)
+		}
+		http.Error(w, fmt.Sprintf("failed to resolve pod: %v", err), status)
 		return
+	}
+
+	// Validate container name if specified
+	if container != "" {
+		found := false
+		for _, c := range podInfo.containers {
+			if c == container {
+				found = true
+				break
+			}
+		}
+		if !found {
+			logger.Warn("Container not found in pod", "container", container,
+				"pod", podInfo.podName, "available", podInfo.containers)
+			http.Error(w, fmt.Sprintf("container %q not found in pod %q (available: %s)",
+				container, podInfo.podName, strings.Join(podInfo.containers, ", ")), http.StatusBadRequest)
+			return
+		}
 	}
 
 	logger = logger.With("pod", podInfo.podName, "podNamespace", podInfo.podNamespace,
@@ -198,21 +267,52 @@ type execPlaneInfo struct {
 type execPodInfo struct {
 	podNamespace string
 	podName      string
+	containers   []string // container names present in the pod
 	plane        execPlaneInfo
 }
 
+// resolveEnvName returns the effective environment, deriving the lowest env from
+// the project's deployment pipeline when the `env` query param is omitted.
+func (h *ExecHandler) resolveEnvName(ctx context.Context, namespace, project, envName string) (string, error) {
+	if envName != "" {
+		return envName, nil
+	}
+	if project == "" {
+		return "", fmt.Errorf("--project or --env is required")
+	}
+	return h.resolveLowestEnvironment(ctx, namespace, project)
+}
+
+// resolveComponentProject returns the owning project of the named component.
+func (h *ExecHandler) resolveComponentProject(ctx context.Context, namespace, componentName string) (string, error) {
+	comp := &openchoreov1alpha1.Component{}
+	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, comp); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("component %q not found in namespace %q", componentName, namespace)
+		}
+		return "", infraErrorf("failed to look up component %q: %w", componentName, err)
+	}
+	if comp.Spec.Owner.ProjectName == "" {
+		return "", fmt.Errorf("component %q has no owning project", componentName)
+	}
+	return comp.Spec.Owner.ProjectName, nil
+}
+
 // resolvePod resolves the target pod for exec by traversing:
-// component → environment → dataplane → pod (first Ready pod matching labels)
-func (h *ExecHandler) resolvePod(ctx context.Context, namespace, componentName, project, envName string) (*execPodInfo, error) {
+// component → environment → dataplane → pod (specific pod if podName set, else first Ready pod)
+func (h *ExecHandler) resolvePod(ctx context.Context, namespace, componentName, project, envName, podName string) (*execPodInfo, error) {
 	// Verify the component exists
 	comp := &openchoreov1alpha1.Component{}
 	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, comp); err != nil {
-		return nil, fmt.Errorf("component %q not found: %w", componentName, err)
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("component %q not found in namespace %q", componentName, namespace)
+		}
+		return nil, infraErrorf("failed to look up component %q: %w", componentName, err)
 	}
 
-	// Resolve environment
+	// Resolve environment — if not specified, derive from the project's deployment pipeline.
+	// resolveLowestEnvironment validates project existence, so no separate check is needed here.
 	if envName == "" {
-		// Find project to get deployment pipeline
 		if project == "" {
 			return nil, fmt.Errorf("--project or --env is required")
 		}
@@ -221,11 +321,23 @@ func (h *ExecHandler) resolvePod(ctx context.Context, namespace, componentName, 
 			return nil, err
 		}
 		envName = resolvedEnv
+	} else if project != "" {
+		// --env was provided but --project was also given: validate that the project exists.
+		proj := &openchoreov1alpha1.Project{}
+		if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: project}, proj); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("project %q not found in namespace %q", project, namespace)
+			}
+			return nil, infraErrorf("failed to look up project %q: %w", project, err)
+		}
 	}
 
 	env := &openchoreov1alpha1.Environment{}
 	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: envName}, env); err != nil {
-		return nil, fmt.Errorf("environment %q not found: %w", envName, err)
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("environment %q not found in namespace %q", envName, namespace)
+		}
+		return nil, infraErrorf("failed to look up environment %q: %w", envName, err)
 	}
 
 	if env.Spec.DataPlaneRef == nil {
@@ -235,7 +347,7 @@ func (h *ExecHandler) resolvePod(ctx context.Context, namespace, componentName, 
 	// Resolve data plane
 	dpResult, err := controller.GetDataPlaneFromRef(ctx, h.k8sClient, env.Namespace, env.Spec.DataPlaneRef)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve data plane: %w", err)
+		return nil, infraErrorf("failed to resolve data plane: %w", err)
 	}
 
 	plane := resolveExecPlaneInfo(dpResult)
@@ -244,14 +356,21 @@ func (h *ExecHandler) resolvePod(ctx context.Context, namespace, componentName, 
 	}
 
 	// Find a pod via the gateway K8s proxy
-	podNamespace, podName, err := h.findReadyPod(ctx, plane, namespace, componentName, envName)
+	var resolvedNamespace, resolvedPodName string
+	var resolvedContainers []string
+	if podName != "" {
+		resolvedNamespace, resolvedPodName, resolvedContainers, err = h.findNamedPod(ctx, plane, namespace, componentName, envName, podName)
+	} else {
+		resolvedNamespace, resolvedPodName, resolvedContainers, err = h.findReadyPod(ctx, plane, namespace, componentName, envName)
+	}
 	if err != nil {
 		return nil, err
 	}
 
 	return &execPodInfo{
-		podNamespace: podNamespace,
-		podName:      podName,
+		podNamespace: resolvedNamespace,
+		podName:      resolvedPodName,
+		containers:   resolvedContainers,
 		plane:        plane,
 	}, nil
 }
@@ -276,59 +395,67 @@ func resolveExecPlaneInfo(dpResult *controller.DataPlaneResult) execPlaneInfo {
 	return execPlaneInfo{}
 }
 
+// podListItem is the minimal pod shape needed for exec resolution.
+type podListItem struct {
+	Metadata struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+	} `json:"metadata"`
+	Spec struct {
+		Containers []struct {
+			Name string `json:"name"`
+		} `json:"containers"`
+	} `json:"spec"`
+	Status struct {
+		Phase      string `json:"phase"`
+		Conditions []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+		} `json:"conditions"`
+	} `json:"status"`
+}
+
+func containerNamesFrom(pod podListItem) []string {
+	names := make([]string, len(pod.Spec.Containers))
+	for i, c := range pod.Spec.Containers {
+		names[i] = c.Name
+	}
+	return names
+}
+
 // findReadyPod lists pods via the gateway K8s proxy and returns the first Ready pod.
-func (h *ExecHandler) findReadyPod(ctx context.Context, plane execPlaneInfo, namespace, componentName, envName string) (string, string, error) {
+func (h *ExecHandler) findReadyPod(ctx context.Context, plane execPlaneInfo, namespace, componentName, envName string) (string, string, []string, error) {
 	if h.gatewayClient == nil {
-		return "", "", fmt.Errorf("gateway client is not configured")
+		return "", "", nil, fmt.Errorf("gateway client is not configured")
 	}
 
-	// Build label selector to find the component's runtime pods.
-	// Pod labels in the data plane use "openchoreo.dev/" prefixed keys.
-	labelSelector := url.QueryEscape(fmt.Sprintf(
+	q := url.Values{}
+	q.Set("labelSelector", fmt.Sprintf(
 		"openchoreo.dev/component=%s,openchoreo.dev/environment=%s,openchoreo.dev/namespace=%s",
 		componentName, envName, namespace,
 	))
+	q.Set("limit", execPodListLimit)
 
-	// List pods across all namespaces in the data plane - use a namespace that's likely to match
-	// The actual K8s namespace in the data plane is derived from the rendered release
-	k8sPath := "api/v1/pods"
-	rawQuery := "labelSelector=" + labelSelector + "&limit=10"
-
-	resp, err := h.gatewayClient.ProxyK8sRequest(ctx, plane.planeType, plane.planeID, plane.crNamespace, plane.crName, k8sPath, rawQuery)
+	resp, err := h.gatewayClient.ProxyK8sRequest(ctx, plane.planeType, plane.planeID, plane.crNamespace, plane.crName, "api/v1/pods", q.Encode())
 	if err != nil {
-		return "", "", fmt.Errorf("failed to list pods from data plane: %w", err)
+		return "", "", nil, infraErrorf("failed to list pods from data plane: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return "", "", fmt.Errorf("failed to list pods (HTTP %d): %s", resp.StatusCode, string(body))
+		return "", "", nil, infraErrorf("failed to list pods (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var podList struct {
-		Items []struct {
-			Metadata struct {
-				Name      string `json:"name"`
-				Namespace string `json:"namespace"`
-			} `json:"metadata"`
-			Status struct {
-				Phase      string `json:"phase"`
-				Conditions []struct {
-					Type   string `json:"type"`
-					Status string `json:"status"`
-				} `json:"conditions"`
-			} `json:"status"`
-		} `json:"items"`
+		Items []podListItem `json:"items"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&podList); err != nil {
-		return "", "", fmt.Errorf("failed to parse pod list: %w", err)
+		return "", "", nil, infraErrorf("failed to parse pod list: %w", err)
 	}
-
-	const podPhaseRunning = "Running"
 
 	if len(podList.Items) == 0 {
-		return "", "", fmt.Errorf("no running pods found for component %q in environment %q", componentName, envName)
+		return "", "", nil, fmt.Errorf("no running pods found for component %q in environment %q", componentName, envName)
 	}
 
 	// Find first Ready pod
@@ -338,7 +465,7 @@ func (h *ExecHandler) findReadyPod(ctx context.Context, plane execPlaneInfo, nam
 		}
 		for _, cond := range pod.Status.Conditions {
 			if cond.Type == "Ready" && cond.Status == "True" {
-				return pod.Metadata.Namespace, pod.Metadata.Name, nil
+				return pod.Metadata.Namespace, pod.Metadata.Name, containerNamesFrom(pod), nil
 			}
 		}
 	}
@@ -346,18 +473,70 @@ func (h *ExecHandler) findReadyPod(ctx context.Context, plane execPlaneInfo, nam
 	// Fallback: first Running pod even if not fully Ready
 	for _, pod := range podList.Items {
 		if pod.Status.Phase == podPhaseRunning {
-			return pod.Metadata.Namespace, pod.Metadata.Name, nil
+			return pod.Metadata.Namespace, pod.Metadata.Name, containerNamesFrom(pod), nil
 		}
 	}
 
-	return "", "", fmt.Errorf("no running pods found for component %q in environment %q", componentName, envName)
+	return "", "", nil, fmt.Errorf("no running pods found for component %q in environment %q", componentName, envName)
+}
+
+// findNamedPod finds a specific pod by name and verifies it belongs to the component and is ready.
+// It uses only a label selector (not fieldSelector) because the gateway proxy may not support
+// fieldSelector passthrough — pod name matching is done in application code.
+func (h *ExecHandler) findNamedPod(ctx context.Context, plane execPlaneInfo, namespace, componentName, envName, podName string) (string, string, []string, error) {
+	if h.gatewayClient == nil {
+		return "", "", nil, fmt.Errorf("gateway client is not configured")
+	}
+
+	q := url.Values{}
+	q.Set("labelSelector", fmt.Sprintf(
+		"openchoreo.dev/component=%s,openchoreo.dev/environment=%s,openchoreo.dev/namespace=%s",
+		componentName, envName, namespace,
+	))
+	q.Set("limit", execPodListLimit)
+
+	resp, err := h.gatewayClient.ProxyK8sRequest(ctx, plane.planeType, plane.planeID, plane.crNamespace, plane.crName, "api/v1/pods", q.Encode())
+	if err != nil {
+		return "", "", nil, infraErrorf("failed to list pods for component %q: %w", componentName, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", nil, infraErrorf("failed to list pods (HTTP %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var podList struct {
+		Items []podListItem `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&podList); err != nil {
+		return "", "", nil, infraErrorf("failed to parse pod list: %w", err)
+	}
+
+	// Filter by pod name in application code — fieldSelector may not be supported by the gateway proxy
+	for _, pod := range podList.Items {
+		if pod.Metadata.Name != podName {
+			continue
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == "Ready" && cond.Status == "True" {
+				return pod.Metadata.Namespace, pod.Metadata.Name, containerNamesFrom(pod), nil
+			}
+		}
+		return "", "", nil, fmt.Errorf("pod %q is not ready (phase: %s)", podName, pod.Status.Phase)
+	}
+
+	return "", "", nil, fmt.Errorf("pod %q not found for component %q in environment %q", podName, componentName, envName)
 }
 
 // resolveLowestEnvironment finds the root environment from the project's deployment pipeline.
 func (h *ExecHandler) resolveLowestEnvironment(ctx context.Context, namespace, projectName string) (string, error) {
 	proj := &openchoreov1alpha1.Project{}
 	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: projectName}, proj); err != nil {
-		return "", fmt.Errorf("project %q not found: %w", projectName, err)
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("project %q not found in namespace %q", projectName, namespace)
+		}
+		return "", infraErrorf("failed to look up project %q: %w", projectName, err)
 	}
 
 	if proj.Spec.DeploymentPipelineRef.Name == "" {
@@ -366,7 +545,10 @@ func (h *ExecHandler) resolveLowestEnvironment(ctx context.Context, namespace, p
 
 	pipeline := &openchoreov1alpha1.DeploymentPipeline{}
 	if err := h.k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: proj.Spec.DeploymentPipelineRef.Name}, pipeline); err != nil {
-		return "", fmt.Errorf("deployment pipeline not found: %w", err)
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("deployment pipeline %q not found in namespace %q", proj.Spec.DeploymentPipelineRef.Name, namespace)
+		}
+		return "", infraErrorf("failed to look up deployment pipeline %q: %w", proj.Spec.DeploymentPipelineRef.Name, err)
 	}
 
 	if len(pipeline.Spec.PromotionPaths) == 0 {
@@ -428,7 +610,25 @@ func (h *ExecHandler) buildGatewayExecURL(podInfo *execPodInfo, container string
 	return u.String(), nil
 }
 
-const execStreamStderrByte = byte(2)
+const (
+	execStreamStderrByte = byte(2)
+	podPhaseRunning      = "Running"
+	// execPodListLimit caps the number of pods fetched per list call.
+	// 100 covers typical deployment scales; both find functions use this value.
+	execPodListLimit = "100"
+)
+
+// execInfraError wraps errors that are caused by infrastructure failures
+// (gateway unreachable, data plane unavailable) rather than bad user input.
+// ServeHTTP uses this to return 503 instead of 400 for those cases.
+type execInfraError struct{ cause error }
+
+func (e *execInfraError) Error() string { return e.cause.Error() }
+func (e *execInfraError) Unwrap() error { return e.cause }
+
+func infraErrorf(format string, args ...any) error {
+	return &execInfraError{cause: fmt.Errorf(format, args...)}
+}
 
 func writeWSError(conn *websocket.Conn, msg string) {
 	payload := msg + "\n"

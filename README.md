@@ -8,7 +8,7 @@
   <h1 style="font-size: 1.5em;">
     A complete, open-source developer platform for Kubernetes
   </h1>
-  <p>OpenChoreo is a developer platform for Kubernetes offering development and architecture abstractions, a Backstage-powered developer portal, application CI/CD, GitOps, and observability.</P>
+  <p>OpenChoreo is a developer platform for Kubernetes that lets developers and AI agents build, deploy, and operate apps, resources, and agentic workloads. It provides development and platform abstractions, a Backstage-powered developer portal, CI/CD, GitOps, and observability.</P>
 
 <!-- License & Community -->
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -27,7 +27,6 @@
 [![Build and Test](https://github.com/openchoreo/openchoreo/actions/workflows/build-and-test.yml/badge.svg?branch=main)](https://github.com/openchoreo/openchoreo/actions/workflows/build-and-test.yml)
 [![E2E Tests](https://img.shields.io/github/actions/workflow/status/openchoreo/openchoreo/e2e-gate.yml?branch=main&label=E2E%20Tests)](https://github.com/openchoreo/openchoreo/actions/workflows/e2e-gate.yml)
 [![Codecov](https://codecov.io/gh/openchoreo/openchoreo/branch/main/graph/badge.svg)](https://codecov.io/gh/openchoreo/openchoreo)
-[![Go Report Card](https://goreportcard.com/badge/github.com/openchoreo/openchoreo)](https://goreportcard.com/report/github.com/openchoreo/openchoreo)
 [![GitHub Release](https://img.shields.io/github/v/release/openchoreo/openchoreo)](https://github.com/openchoreo/openchoreo/releases/latest)
 [![GitHub last commit](https://img.shields.io/github/last-commit/openchoreo/openchoreo.svg)](https://github.com/openchoreo/openchoreo/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/openchoreo/openchoreo.svg)](https://github.com/openchoreo/openchoreo/issues)

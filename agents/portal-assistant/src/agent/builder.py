@@ -27,6 +27,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from common.auth.bearer import BearerTokenAuth
 from src.agent.middleware import (
     EmptyResultGuardMiddleware,
     LoggingMiddleware,
@@ -36,11 +37,10 @@ from src.agent.middleware import (
     WriteGuardMiddleware,
 )
 from src.agent.tool_registry import is_mutating
-from src.auth.bearer import BearerTokenAuth
 from src.clients import get_model, get_tools_for_user
 from src.config import settings
 from src.models import ChatResponse
-from src.template_manager import render
+from src.templates import render
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,8 @@ _DEFAULT_RECURSION_LIMIT = 30
 # it wins over both ``_DEFAULT_RECURSION_LIMIT`` and the map below.
 _RECURSION_LIMIT_FOR_CASE: dict[str, int] = {
     "build_failure": 15,
-    "runtime_debug": 15,
+    "runtime_debug": 20,
+    "dependency_pending": 20,
 }
 
 
@@ -135,10 +136,44 @@ _TOOLS_FOR_CASE: dict[str, set[str]] = {
         "get_component",
         "list_release_bindings",
         "get_release_binding",
+        # Deployment health — when a deploy is Failed/unhealthy the cause is
+        # usually in the rendered K8s resources, not the log pipeline (a
+        # crashlooping / image-pull-failing pod never emits an app log, so
+        # query_component_logs comes back empty). get_resource_tree returns the
+        # RenderedRelease (rendered manifests + per-resource health) + live
+        # nodes; events/logs drill into the specific failing resource.
+        "get_resource_tree",
+        "get_resource_events",
+        "get_resource_logs",
         # Tier 2 — rca escalation
         "list_rca_reports",
         "get_rca_report",
         "analyze_runtime_state",
+    },
+    "dependency_pending": {
+        # Topology — locate the dependent binding and the down dependency.
+        # The dependent's pendingConnections name the target component; the
+        # binding/component getters explain whether the target is
+        # undeployed, not-ready, or missing an endpoint.
+        "list_components",
+        "get_component",
+        "list_release_bindings",
+        "get_release_binding",
+        # Why is the dependency down? — when the target IS deployed but not
+        # ready (crashlooping, erroring), its logs / active incidents carry
+        # the root cause behind the unresolved connection.
+        "query_component_logs",
+        "query_incidents",
+        # Deployment status — when the target dependency IS deployed, drill
+        # into its rendered release + live data-plane resources directly.
+        # get_resource_tree returns the RenderedRelease (rendered manifests +
+        # per-resource health) alongside the live K8s nodes; get_resource_events
+        # surfaces scheduling/startup failures on a specific rendered resource;
+        # get_resource_logs pulls a pod's container logs straight from the data
+        # plane (works before observability has indexed anything).
+        "get_resource_tree",
+        "get_resource_events",
+        "get_resource_logs",
     },
 }
 

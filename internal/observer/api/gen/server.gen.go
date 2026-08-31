@@ -51,6 +51,12 @@ type ServerInterface interface {
 	// Handles triggered alerts from the alerting backend
 	// (POST /api/v1alpha1/alerts/webhook)
 	HandleAlertWebhook(w http.ResponseWriter, r *http.Request)
+	// Component cost records for a namespace+environment
+	// (GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment})
+	GetComponentCosts(w http.ResponseWriter, r *http.Request, namespace FinOpsNamespace, environment FinOpsEnvironment, params GetComponentCostsParams)
+	// Right-sizing recommendations for a project or single component
+	// (GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}/recommendations)
+	GetRecommendations(w http.ResponseWriter, r *http.Request, namespace FinOpsNamespace, environment FinOpsEnvironment, params GetRecommendationsParams)
 	// Query incidents
 	// (POST /api/v1alpha1/incidents/query)
 	QueryIncidents(w http.ResponseWriter, r *http.Request)
@@ -67,8 +73,8 @@ type ServerInterface interface {
 	// (POST /api/v1alpha1/traces/{traceId}/spans/query)
 	QuerySpansForTrace(w http.ResponseWriter, r *http.Request, traceId string)
 	// Get details of a span for a trace
-	// (GET /api/v1alpha1/traces/{traceId}/spans/{spanId})
-	GetSpanDetailsForTrace(w http.ResponseWriter, r *http.Request, traceId string, spanId string)
+	// (POST /api/v1alpha1/traces/{traceId}/spans/{spanId})
+	QuerySpanDetailsForTrace(w http.ResponseWriter, r *http.Request, traceId string, spanId string)
 	// Health check
 	// (GET /health)
 	Health(w http.ResponseWriter, r *http.Request)
@@ -328,6 +334,192 @@ func (siw *ServerInterfaceWrapper) HandleAlertWebhook(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// GetComponentCosts operation middleware
+func (siw *ServerInterfaceWrapper) GetComponentCosts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "namespace" -------------
+	var namespace FinOpsNamespace
+
+	err = runtime.BindStyledParameterWithOptions("simple", "namespace", r.PathValue("namespace"), &namespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespace", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "environment" -------------
+	var environment FinOpsEnvironment
+
+	err = runtime.BindStyledParameterWithOptions("simple", "environment", r.PathValue("environment"), &environment, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "environment", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetComponentCostsParams
+
+	// ------------- Optional query parameter "project" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "project", r.URL.Query(), &params.Project)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "component" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "component", r.URL.Query(), &params.Component)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "component", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "startTime" -------------
+
+	if paramValue := r.URL.Query().Get("startTime"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "startTime"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "startTime", r.URL.Query(), &params.StartTime)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "startTime", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "endTime" -------------
+
+	if paramValue := r.URL.Query().Get("endTime"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "endTime"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "endTime", r.URL.Query(), &params.EndTime)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "endTime", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "granularity" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "granularity", r.URL.Query(), &params.Granularity)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "granularity", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetComponentCosts(w, r, namespace, environment, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRecommendations operation middleware
+func (siw *ServerInterfaceWrapper) GetRecommendations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "namespace" -------------
+	var namespace FinOpsNamespace
+
+	err = runtime.BindStyledParameterWithOptions("simple", "namespace", r.PathValue("namespace"), &namespace, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "namespace", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "environment" -------------
+	var environment FinOpsEnvironment
+
+	err = runtime.BindStyledParameterWithOptions("simple", "environment", r.PathValue("environment"), &environment, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "environment", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetRecommendationsParams
+
+	// ------------- Optional query parameter "project" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "project", r.URL.Query(), &params.Project)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "project", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "component" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "component", r.URL.Query(), &params.Component)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "component", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "startTime" -------------
+
+	if paramValue := r.URL.Query().Get("startTime"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "startTime"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "startTime", r.URL.Query(), &params.StartTime)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "startTime", Err: err})
+		return
+	}
+
+	// ------------- Required query parameter "endTime" -------------
+
+	if paramValue := r.URL.Query().Get("endTime"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "endTime"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "endTime", r.URL.Query(), &params.EndTime)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "endTime", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRecommendations(w, r, namespace, environment, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // QueryIncidents operation middleware
 func (siw *ServerInterfaceWrapper) QueryIncidents(w http.ResponseWriter, r *http.Request) {
 
@@ -450,8 +642,8 @@ func (siw *ServerInterfaceWrapper) QuerySpansForTrace(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
-// GetSpanDetailsForTrace operation middleware
-func (siw *ServerInterfaceWrapper) GetSpanDetailsForTrace(w http.ResponseWriter, r *http.Request) {
+// QuerySpanDetailsForTrace operation middleware
+func (siw *ServerInterfaceWrapper) QuerySpanDetailsForTrace(w http.ResponseWriter, r *http.Request) {
 
 	var err error
 
@@ -480,7 +672,7 @@ func (siw *ServerInterfaceWrapper) GetSpanDetailsForTrace(w http.ResponseWriter,
 	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetSpanDetailsForTrace(w, r, traceId, spanId)
+		siw.Handler.QuerySpanDetailsForTrace(w, r, traceId, spanId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -633,12 +825,14 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc("GET "+options.BaseURL+"/api/v1alpha1/alerts/sources/{sourceType}/rules/{ruleName}", wrapper.GetAlertRule)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/v1alpha1/alerts/sources/{sourceType}/rules/{ruleName}", wrapper.UpdateAlertRule)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/alerts/webhook", wrapper.HandleAlertWebhook)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}", wrapper.GetComponentCosts)
+	m.HandleFunc("GET "+options.BaseURL+"/api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}/recommendations", wrapper.GetRecommendations)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/incidents/query", wrapper.QueryIncidents)
 	m.HandleFunc("PUT "+options.BaseURL+"/api/v1alpha1/incidents/{incidentId}", wrapper.UpdateIncident)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/metrics/runtime-topology", wrapper.QueryRuntimeTopology)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/traces/query", wrapper.QueryTraces)
 	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/traces/{traceId}/spans/query", wrapper.QuerySpansForTrace)
-	m.HandleFunc("GET "+options.BaseURL+"/api/v1alpha1/traces/{traceId}/spans/{spanId}", wrapper.GetSpanDetailsForTrace)
+	m.HandleFunc("POST "+options.BaseURL+"/api/v1alpha1/traces/{traceId}/spans/{spanId}", wrapper.QuerySpanDetailsForTrace)
 	m.HandleFunc("GET "+options.BaseURL+"/health", wrapper.Health)
 
 	return m
@@ -693,6 +887,15 @@ type QueryEvents500JSONResponse ErrorResponse
 func (response QueryEvents500JSONResponse) VisitQueryEventsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryEvents501JSONResponse ErrorResponse
+
+func (response QueryEvents501JSONResponse) VisitQueryEventsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -1063,6 +1266,134 @@ func (response HandleAlertWebhook500JSONResponse) VisitHandleAlertWebhookRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GetComponentCostsRequestObject struct {
+	Namespace   FinOpsNamespace   `json:"namespace"`
+	Environment FinOpsEnvironment `json:"environment"`
+	Params      GetComponentCostsParams
+}
+
+type GetComponentCostsResponseObject interface {
+	VisitGetComponentCostsResponse(w http.ResponseWriter) error
+}
+
+type GetComponentCosts200JSONResponse CostResponse
+
+func (response GetComponentCosts200JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetComponentCosts400JSONResponse ErrorResponse
+
+func (response GetComponentCosts400JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetComponentCosts401JSONResponse ErrorResponse
+
+func (response GetComponentCosts401JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetComponentCosts403JSONResponse ErrorResponse
+
+func (response GetComponentCosts403JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetComponentCosts404JSONResponse ErrorResponse
+
+func (response GetComponentCosts404JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetComponentCosts500JSONResponse ErrorResponse
+
+func (response GetComponentCosts500JSONResponse) VisitGetComponentCostsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendationsRequestObject struct {
+	Namespace   FinOpsNamespace   `json:"namespace"`
+	Environment FinOpsEnvironment `json:"environment"`
+	Params      GetRecommendationsParams
+}
+
+type GetRecommendationsResponseObject interface {
+	VisitGetRecommendationsResponse(w http.ResponseWriter) error
+}
+
+type GetRecommendations200JSONResponse RecommendationResponse
+
+func (response GetRecommendations200JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendations400JSONResponse ErrorResponse
+
+func (response GetRecommendations400JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendations401JSONResponse ErrorResponse
+
+func (response GetRecommendations401JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendations403JSONResponse ErrorResponse
+
+func (response GetRecommendations403JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendations404JSONResponse ErrorResponse
+
+func (response GetRecommendations404JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetRecommendations500JSONResponse ErrorResponse
+
+func (response GetRecommendations500JSONResponse) VisitGetRecommendationsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type QueryIncidentsRequestObject struct {
 	Body *QueryIncidentsJSONRequestBody
 }
@@ -1339,54 +1670,55 @@ func (response QuerySpansForTrace500JSONResponse) VisitQuerySpansForTraceRespons
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSpanDetailsForTraceRequestObject struct {
+type QuerySpanDetailsForTraceRequestObject struct {
 	TraceId string `json:"traceId"`
 	SpanId  string `json:"spanId"`
+	Body    *QuerySpanDetailsForTraceJSONRequestBody
 }
 
-type GetSpanDetailsForTraceResponseObject interface {
-	VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error
+type QuerySpanDetailsForTraceResponseObject interface {
+	VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error
 }
 
-type GetSpanDetailsForTrace200JSONResponse TraceSpanDetailsResponse
+type QuerySpanDetailsForTrace200JSONResponse TraceSpanDetailsResponse
 
-func (response GetSpanDetailsForTrace200JSONResponse) VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error {
+func (response QuerySpanDetailsForTrace200JSONResponse) VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSpanDetailsForTrace400JSONResponse ErrorResponse
+type QuerySpanDetailsForTrace400JSONResponse ErrorResponse
 
-func (response GetSpanDetailsForTrace400JSONResponse) VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error {
+func (response QuerySpanDetailsForTrace400JSONResponse) VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(400)
 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSpanDetailsForTrace401JSONResponse ErrorResponse
+type QuerySpanDetailsForTrace401JSONResponse ErrorResponse
 
-func (response GetSpanDetailsForTrace401JSONResponse) VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error {
+func (response QuerySpanDetailsForTrace401JSONResponse) VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSpanDetailsForTrace403JSONResponse ErrorResponse
+type QuerySpanDetailsForTrace403JSONResponse ErrorResponse
 
-func (response GetSpanDetailsForTrace403JSONResponse) VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error {
+func (response QuerySpanDetailsForTrace403JSONResponse) VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(403)
 
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetSpanDetailsForTrace500JSONResponse ErrorResponse
+type QuerySpanDetailsForTrace500JSONResponse ErrorResponse
 
-func (response GetSpanDetailsForTrace500JSONResponse) VisitGetSpanDetailsForTraceResponse(w http.ResponseWriter) error {
+func (response QuerySpanDetailsForTrace500JSONResponse) VisitQuerySpanDetailsForTraceResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(500)
 
@@ -1452,6 +1784,12 @@ type StrictServerInterface interface {
 	// Handles triggered alerts from the alerting backend
 	// (POST /api/v1alpha1/alerts/webhook)
 	HandleAlertWebhook(ctx context.Context, request HandleAlertWebhookRequestObject) (HandleAlertWebhookResponseObject, error)
+	// Component cost records for a namespace+environment
+	// (GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment})
+	GetComponentCosts(ctx context.Context, request GetComponentCostsRequestObject) (GetComponentCostsResponseObject, error)
+	// Right-sizing recommendations for a project or single component
+	// (GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}/recommendations)
+	GetRecommendations(ctx context.Context, request GetRecommendationsRequestObject) (GetRecommendationsResponseObject, error)
 	// Query incidents
 	// (POST /api/v1alpha1/incidents/query)
 	QueryIncidents(ctx context.Context, request QueryIncidentsRequestObject) (QueryIncidentsResponseObject, error)
@@ -1468,8 +1806,8 @@ type StrictServerInterface interface {
 	// (POST /api/v1alpha1/traces/{traceId}/spans/query)
 	QuerySpansForTrace(ctx context.Context, request QuerySpansForTraceRequestObject) (QuerySpansForTraceResponseObject, error)
 	// Get details of a span for a trace
-	// (GET /api/v1alpha1/traces/{traceId}/spans/{spanId})
-	GetSpanDetailsForTrace(ctx context.Context, request GetSpanDetailsForTraceRequestObject) (GetSpanDetailsForTraceResponseObject, error)
+	// (POST /api/v1alpha1/traces/{traceId}/spans/{spanId})
+	QuerySpanDetailsForTrace(ctx context.Context, request QuerySpanDetailsForTraceRequestObject) (QuerySpanDetailsForTraceResponseObject, error)
 	// Health check
 	// (GET /health)
 	Health(ctx context.Context, request HealthRequestObject) (HealthResponseObject, error)
@@ -1780,6 +2118,62 @@ func (sh *strictHandler) HandleAlertWebhook(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// GetComponentCosts operation middleware
+func (sh *strictHandler) GetComponentCosts(w http.ResponseWriter, r *http.Request, namespace FinOpsNamespace, environment FinOpsEnvironment, params GetComponentCostsParams) {
+	var request GetComponentCostsRequestObject
+
+	request.Namespace = namespace
+	request.Environment = environment
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetComponentCosts(ctx, request.(GetComponentCostsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetComponentCosts")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetComponentCostsResponseObject); ok {
+		if err := validResponse.VisitGetComponentCostsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRecommendations operation middleware
+func (sh *strictHandler) GetRecommendations(w http.ResponseWriter, r *http.Request, namespace FinOpsNamespace, environment FinOpsEnvironment, params GetRecommendationsParams) {
+	var request GetRecommendationsRequestObject
+
+	request.Namespace = namespace
+	request.Environment = environment
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRecommendations(ctx, request.(GetRecommendationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRecommendations")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRecommendationsResponseObject); ok {
+		if err := validResponse.VisitGetRecommendationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // QueryIncidents operation middleware
 func (sh *strictHandler) QueryIncidents(w http.ResponseWriter, r *http.Request) {
 	var request QueryIncidentsRequestObject
@@ -1939,26 +2333,33 @@ func (sh *strictHandler) QuerySpansForTrace(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// GetSpanDetailsForTrace operation middleware
-func (sh *strictHandler) GetSpanDetailsForTrace(w http.ResponseWriter, r *http.Request, traceId string, spanId string) {
-	var request GetSpanDetailsForTraceRequestObject
+// QuerySpanDetailsForTrace operation middleware
+func (sh *strictHandler) QuerySpanDetailsForTrace(w http.ResponseWriter, r *http.Request, traceId string, spanId string) {
+	var request QuerySpanDetailsForTraceRequestObject
 
 	request.TraceId = traceId
 	request.SpanId = spanId
 
+	var body QuerySpanDetailsForTraceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
-		return sh.ssi.GetSpanDetailsForTrace(ctx, request.(GetSpanDetailsForTraceRequestObject))
+		return sh.ssi.QuerySpanDetailsForTrace(ctx, request.(QuerySpanDetailsForTraceRequestObject))
 	}
 	for _, middleware := range sh.middlewares {
-		handler = middleware(handler, "GetSpanDetailsForTrace")
+		handler = middleware(handler, "QuerySpanDetailsForTrace")
 	}
 
 	response, err := handler(r.Context(), w, r, request)
 
 	if err != nil {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
-	} else if validResponse, ok := response.(GetSpanDetailsForTraceResponseObject); ok {
-		if err := validResponse.VisitGetSpanDetailsForTraceResponse(w); err != nil {
+	} else if validResponse, ok := response.(QuerySpanDetailsForTraceResponseObject); ok {
+		if err := validResponse.VisitQuerySpanDetailsForTraceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -1993,112 +2394,141 @@ func (sh *strictHandler) Health(w http.ResponseWriter, r *http.Request) {
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"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",
-	"vAAA",
+	"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",
+	"2SdZ6ENLu4fbh/8XAAD//5P4Bdxy4gAA",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

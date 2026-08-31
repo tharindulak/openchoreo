@@ -7,10 +7,48 @@
 # environments, pipeline, component types, workflows, and traits.
 #
 # Usage:
-#   kubectl apply -f https://raw.githubusercontent.com/openchoreo/openchoreo/main/samples/getting-started/all.yaml
-#
-# Or if you have cloned the repository:
 #   kubectl apply -f samples/getting-started/all.yaml
+
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterProjectType
+metadata:
+  name: default
+  annotations:
+    openchoreo.dev/display-name: Default Project Type
+    openchoreo.dev/description: >-
+      Minimal project type that provisions only the cell namespace per
+      environment. Per-environment labels and annotations can be added
+      to the namespace via ProjectReleaseBinding.spec.environmentConfigs
+      (namespaceLabels, namespaceAnnotations). Use as the starting
+      template when no additional shared infrastructure (NetworkPolicies,
+      ResourceQuotas, baseline RBAC) is needed.
+  labels:
+    openchoreo.dev/name: default
+spec:
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      properties:
+        namespaceLabels:
+          type: object
+          additionalProperties:
+            type: string
+          default: {}
+        namespaceAnnotations:
+          type: object
+          additionalProperties:
+            type: string
+          default: {}
+  resources:
+    - id: cell-namespace
+      template:
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: ${metadata.namespace}
+          labels: ${oc_merge(metadata.labels, environmentConfigs.namespaceLabels)}
+          annotations: ${environmentConfigs.namespaceAnnotations}
 
 ---
 apiVersion: openchoreo.dev/v1alpha1
@@ -26,6 +64,54 @@ metadata:
 spec:
   deploymentPipelineRef:
     name: default
+  type:
+    kind: ClusterProjectType
+    name: default
+
+
+# ProjectReleaseBindings deploy the project to each pipeline environment.
+# spec.projectRelease is left unset; the Project controller seeds it once
+# with the latest ProjectRelease. Advancing it afterwards (promotion) is
+# manual.
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: default-development
+  namespace: default
+  labels:
+    openchoreo.dev/project: default
+    openchoreo.dev/environment: development
+spec:
+  owner:
+    projectName: default
+  environment: development
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: default-staging
+  namespace: default
+  labels:
+    openchoreo.dev/project: default
+    openchoreo.dev/environment: staging
+spec:
+  owner:
+    projectName: default
+  environment: staging
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: default-production
+  namespace: default
+  labels:
+    openchoreo.dev/project: default
+    openchoreo.dev/environment: production
+spec:
+  owner:
+    projectName: default
+  environment: production
 
 ---
 apiVersion: openchoreo.dev/v1alpha1
@@ -426,6 +512,18 @@ spec:
                   path:
                     type: ReplacePrefixMatch
                     replacePrefixMatch: '${endpoint.value.?basePath.orValue("/")}'
+              # Allow browsers to call this endpoint cross-origin (e.g. the portal's
+              # OpenAPI "Try Out" console). The wildcard origin suits a dev IDP; tighten
+              # to the portal origin(s) for production. No credentials are used, so "*"
+              # is valid. The prefix match above serves all methods, so OPTIONS preflight
+              # requests reach this filter.
+              - type: CORS
+                cors:
+                  allowOrigins: ["*"]
+                  allowMethods: [GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD]
+                  allowHeaders: ["*"]
+                  exposeHeaders: ["*"]
+                  allowCredentials: false
             backendRefs:
             - name: ${metadata.componentName}
               port: ${endpoint.value.port}

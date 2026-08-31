@@ -294,18 +294,41 @@ func TestTracesAuthz_QuerySpans_Denied(t *testing.T) {
 	assert.ErrorIs(t, err, observerAuthz.ErrAuthzForbidden)
 }
 
-func TestTracesAuthz_GetSpanDetails_PassThrough(t *testing.T) {
+func TestTracesAuthz_QuerySpanDetails_Allowed(t *testing.T) {
+	scope := types.ComponentSearchScope{Namespace: "ns", Project: "proj", Component: "comp", Environment: "env"}
+
 	inner := mocks.NewMockTracesQuerier(t)
 	expected := &types.SpanInfo{SpanID: "span-1"}
-	inner.EXPECT().GetSpanDetails(mock.Anything, "trace-1", "span-1").Return(expected, nil)
+	inner.EXPECT().QuerySpanDetails(mock.Anything, "trace-1", "span-1", scope).Return(expected, nil)
 
-	// PDP with no Evaluate expectation — testify will fail if Evaluate is called
+	var gotReq *authzcore.EvaluateRequest
 	pdp := coremocks.NewMockPDP(t)
+	pdp.EXPECT().Evaluate(mock.Anything, mock.Anything).
+		Run(func(_ context.Context, req *authzcore.EvaluateRequest) { gotReq = req }).
+		Return(&authzcore.Decision{Decision: true}, nil).Once()
+
 	svc := NewTracesServiceWithAuthz(inner, pdp, testLogger())
 
-	resp, err := svc.GetSpanDetails(context.Background(), "trace-1", "span-1")
+	resp, err := svc.QuerySpanDetails(authedCtx(), "trace-1", "span-1", scope)
 	require.NoError(t, err)
 	assert.Equal(t, expected, resp)
+
+	require.NotNil(t, gotReq)
+	assert.Equal(t, string(observerAuthz.ActionViewTraces), gotReq.Action)
+	assert.Equal(t, string(observerAuthz.ResourceTypeComponent), gotReq.Resource.Type)
+	assert.Equal(t, "comp", gotReq.Resource.ID)
+	assert.Equal(t, authzcore.ResourceHierarchy{Namespace: "ns", Project: "proj", Component: "comp"}, gotReq.Resource.Hierarchy)
+	assert.Equal(t, "ns/env", gotReq.Context.Resource.Environment)
+}
+
+func TestTracesAuthz_QuerySpanDetails_Denied(t *testing.T) {
+	inner := mocks.NewMockTracesQuerier(t)
+
+	svc := NewTracesServiceWithAuthz(inner, mockPDPDeny(t), testLogger())
+
+	_, err := svc.QuerySpanDetails(authedCtx(), "trace-1", "span-1",
+		types.ComponentSearchScope{Namespace: "ns", Project: "proj"})
+	assert.ErrorIs(t, err, observerAuthz.ErrAuthzForbidden)
 }
 
 // --- MetricsQuerier QueryRuntimeTopology Authz Tests ---
@@ -371,5 +394,76 @@ func TestMetricsAuthz_QueryRuntimeTopology_Denied(t *testing.T) {
 	}
 
 	_, err := svc.QueryRuntimeTopology(authedCtx(), req)
+	assert.ErrorIs(t, err, observerAuthz.ErrAuthzForbidden)
+}
+
+// --- FinOpsQuerier Authz Tests ---
+
+func finopsCostReq() *types.CostQueryRequest {
+	return &types.CostQueryRequest{
+		Namespace:   "ns",
+		Environment: "env",
+		Project:     "proj",
+		Component:   "comp",
+		StartTime:   "2026-05-23T10:00:01Z",
+		EndTime:     "2026-05-24T10:00:01Z",
+	}
+}
+
+func TestFinOpsAuthz_GetComponentCosts_NilPDP(t *testing.T) {
+	inner := mocks.NewMockFinOpsQuerier(t)
+	inner.EXPECT().GetComponentCosts(mock.Anything, mock.Anything).Return("result", nil)
+
+	svc := NewFinOpsServiceWithAuthz(inner, nil, testLogger())
+
+	resp, err := svc.GetComponentCosts(context.Background(), finopsCostReq())
+	require.NoError(t, err)
+	assert.Equal(t, "result", resp)
+}
+
+func TestFinOpsAuthz_GetComponentCosts_Allowed(t *testing.T) {
+	inner := mocks.NewMockFinOpsQuerier(t)
+	inner.EXPECT().GetComponentCosts(mock.Anything, mock.Anything).Return("result", nil)
+
+	svc := NewFinOpsServiceWithAuthz(inner, mockPDPAllow(t), testLogger())
+
+	resp, err := svc.GetComponentCosts(authedCtx(), finopsCostReq())
+	require.NoError(t, err)
+	assert.Equal(t, "result", resp)
+}
+
+func TestFinOpsAuthz_GetComponentCosts_Denied(t *testing.T) {
+	inner := mocks.NewMockFinOpsQuerier(t)
+
+	svc := NewFinOpsServiceWithAuthz(inner, mockPDPDeny(t), testLogger())
+
+	_, err := svc.GetComponentCosts(authedCtx(), finopsCostReq())
+	assert.ErrorIs(t, err, observerAuthz.ErrAuthzForbidden)
+}
+
+func TestFinOpsAuthz_GetComponentCosts_NilRequest(t *testing.T) {
+	inner := mocks.NewMockFinOpsQuerier(t)
+
+	svc := NewFinOpsServiceWithAuthz(inner, nil, testLogger())
+
+	_, err := svc.GetComponentCosts(context.Background(), nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "FinOps cost query request is required")
+}
+
+func TestFinOpsAuthz_GetRecommendations_Denied(t *testing.T) {
+	inner := mocks.NewMockFinOpsQuerier(t)
+
+	svc := NewFinOpsServiceWithAuthz(inner, mockPDPDeny(t), testLogger())
+	req := &types.RecommendationQueryRequest{
+		Namespace:   "ns",
+		Environment: "env",
+		Project:     "proj",
+		Component:   "comp",
+		StartTime:   "2026-05-23T10:00:01Z",
+		EndTime:     "2026-05-24T10:00:01Z",
+	}
+
+	_, err := svc.GetRecommendations(authedCtx(), req)
 	assert.ErrorIs(t, err, observerAuthz.ErrAuthzForbidden)
 }

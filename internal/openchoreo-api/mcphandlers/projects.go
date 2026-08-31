@@ -5,13 +5,16 @@ package mcphandlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/controller"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
+	"github.com/openchoreo/openchoreo/internal/server/middleware/audit"
 	"github.com/openchoreo/openchoreo/pkg/mcp/tools"
 )
 
@@ -23,7 +26,13 @@ func (h *MCPHandler) ListProjects(ctx context.Context, namespaceName string, opt
 	return wrapTransformedList("projects", result.Items, result.NextCursor, projectSummary), nil
 }
 
-func (h *MCPHandler) CreateProject(ctx context.Context, namespaceName string, req *gen.CreateProjectJSONRequestBody) (any, error) {
+// CreateProject creates the Project CR only. ProjectReleaseBindings, which bind
+// the project to an environment, are created separately via
+// CreateProjectReleaseBinding so this tool's required authz stays exactly
+// project:create rather than also depending on projectreleasebinding:create.
+func (h *MCPHandler) CreateProject(
+	ctx context.Context, namespaceName string, req *gen.CreateProjectJSONRequestBody,
+) (any, error) {
 	annotations := map[string]string{}
 	if req.Metadata.Annotations != nil {
 		for key, value := range *req.Metadata.Annotations {
@@ -52,6 +61,23 @@ func (h *MCPHandler) CreateProject(ctx context.Context, namespaceName string, re
 		},
 	}
 
+	if req.Spec != nil && req.Spec.Type != nil {
+		project.Spec.Type = openchoreov1alpha1.ProjectTypeRef{
+			Name: req.Spec.Type.Name,
+		}
+		if req.Spec.Type.Kind != nil {
+			project.Spec.Type.Kind = openchoreov1alpha1.ProjectTypeRefKind(*req.Spec.Type.Kind)
+		}
+	}
+
+	if req.Spec != nil && req.Spec.Parameters != nil {
+		paramsBytes, err := json.Marshal(*req.Spec.Parameters)
+		if err != nil {
+			return nil, fmt.Errorf("marshal parameters: %w", err)
+		}
+		project.Spec.Parameters = &runtime.RawExtension{Raw: paramsBytes}
+	}
+
 	if displayName, ok := project.Annotations[controller.AnnotationKeyDisplayName]; ok && displayName == "" {
 		delete(project.Annotations, controller.AnnotationKeyDisplayName)
 	}
@@ -63,6 +89,7 @@ func (h *MCPHandler) CreateProject(ctx context.Context, namespaceName string, re
 	if err != nil {
 		return nil, err
 	}
+	audit.SetResource(ctx, &audit.Resource{Namespace: namespaceName, ID: string(created.UID), Name: created.Name})
 	return mutationResult(created, "created"), nil
 }
 
@@ -106,6 +133,7 @@ func (h *MCPHandler) UpdateProject(
 			namespaceName, projectName, deploymentPipeline, err,
 		)
 	}
+	audit.SetResource(ctx, &audit.Resource{Namespace: namespaceName, ID: string(updated.UID), Name: updated.Name})
 	return mutationResult(updated, "updated", map[string]any{
 		"deploymentPipelineRef": updated.Spec.DeploymentPipelineRef.Name,
 	}), nil
@@ -115,6 +143,9 @@ func (h *MCPHandler) DeleteProject(ctx context.Context, namespaceName, projectNa
 	if err := h.services.ProjectService.DeleteProject(ctx, namespaceName, projectName); err != nil {
 		return nil, err
 	}
+	// No UID here: ProjectService.DeleteProject returns only an error, not the
+	// deleted object, so the identifier that survives the deletion is the name.
+	audit.SetResource(ctx, &audit.Resource{Namespace: namespaceName, Name: projectName})
 	return map[string]any{
 		"name":      projectName,
 		"namespace": namespaceName,

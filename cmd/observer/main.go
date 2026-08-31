@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -71,6 +72,19 @@ func main() {
 		logger.With("component", "metrics-adapter"),
 	)
 	logger.Info("Metrics adapter initialized", "adapter_url", sanitizeURL(cfg.Adapters.MetricsAdapterURL))
+
+	// Initialize FinOps adapter (forwards cost-insights queries to external adapter)
+	finopsAdapter, err := service.NewFinOpsAdapter(
+		cfg.Adapters.FinOpsAdapterURL,
+		cfg.Adapters.FinOpsAdapterTimeout,
+		uidResolver,
+		logger.With("component", "finops-adapter"),
+	)
+	if err != nil {
+		logger.Error("Failed to create finops adapter", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("FinOps adapter initialized", "adapter_url", sanitizeURL(cfg.Adapters.FinOpsAdapterURL))
 
 	// Initialize metrics adapter HTTP client for alert CRUD forwarding
 	metricsAdapterClient := &http.Client{
@@ -211,6 +225,8 @@ func main() {
 		metricsService, authzClient, logger.With("component", "authz-metrics"))
 	authzTracesService := service.NewTracesServiceWithAuthz(
 		tracesService, authzClient, logger.With("component", "authz-traces"))
+	authzFinOpsService := service.NewFinOpsServiceWithAuthz(
+		finopsAdapter, authzClient, logger.With("component", "authz-finops"))
 	authzAlertIncidentService := service.NewAlertIncidentServiceWithAuthz(
 		alertService, authzClient, logger.With("component", "authz-alerts-incidents"))
 
@@ -222,6 +238,7 @@ func main() {
 		authzMetricsService,
 		authzAlertIncidentService,
 		authzTracesService,
+		authzFinOpsService,
 		logger.With("component", "api-handler"),
 	)
 
@@ -265,10 +282,18 @@ func main() {
 	api.HandleFunc("POST /api/v1alpha1/metrics/runtime-topology", newAPIHandler.QueryRuntimeTopology)
 	api.HandleFunc("POST /api/v1alpha1/traces/query", newAPIHandler.QueryTraces)
 	api.HandleFunc("POST /api/v1alpha1/traces/{traceId}/spans/query", newAPIHandler.QuerySpansForTrace)
-	api.HandleFunc("GET /api/v1alpha1/traces/{traceId}/spans/{spanId}", newAPIHandler.GetSpanDetailsForTrace)
+	api.HandleFunc("POST /api/v1alpha1/traces/{traceId}/spans/{spanId}", newAPIHandler.QuerySpanDetailsForTrace)
 	api.HandleFunc("POST /api/v1alpha1/alerts/query", newAPIHandler.QueryAlerts)
 	api.HandleFunc("POST /api/v1alpha1/incidents/query", newAPIHandler.QueryIncidents)
 	api.HandleFunc("PUT /api/v1alpha1/incidents/{incidentId}", newAPIHandler.UpdateIncident)
+
+	// ===== New API Routes (v1alpha1) FinOps cost insights =====
+	api.HandleFunc(
+		"GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}",
+		newAPIHandler.GetComponentCosts)
+	api.HandleFunc(
+		"GET /api/v1alpha1/costs/namespaces/{namespace}/environments/{environment}/recommendations",
+		newAPIHandler.GetRecommendations)
 
 	// Initialize new MCP handler backed by the authz-wrapped service layer
 	newMCPHandler, err := observermcp.NewMCPHandler(
@@ -278,6 +303,7 @@ func main() {
 		authzMetricsService,
 		authzAlertIncidentService,
 		authzTracesService,
+		authzFinOpsService,
 		logger.With("component", "mcp-handler"),
 	)
 	if err != nil {
@@ -480,7 +506,7 @@ func initMCPMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 	resourceMetadataURL := observerBaseURL + "/.well-known/oauth-protected-resource"
 
-	return mcpmiddleware.Auth401Interceptor(resourceMetadataURL)
+	return mcpmiddleware.Auth401Interceptor(resourceMetadataURL, mcpOAuthScopes())
 }
 
 // oauthProtectedResourceMetadata returns a handler for OAuth 2.0 protected resource metadata
@@ -506,6 +532,23 @@ func oauthProtectedResourceMetadata(logger *slog.Logger) http.HandlerFunc {
 		AuthorizationServers: []string{
 			authServerBaseURL,
 		},
-		Logger: logger,
+		ScopesSupported: mcpOAuthScopes(),
+		Logger:          logger,
 	})
+}
+
+// mcpOAuthScopes returns the OAuth scopes to advertise for the MCP endpoint.
+// Operators can override via MCP_OAUTH_SCOPES (space-delimited) when an
+// authorization server's scopes_supported doesn't match what the app client
+// actually allows (see issue #3217).
+func mcpOAuthScopes() []string {
+	raw := os.Getenv(apiconfig.EnvMCPOAuthScopes)
+	if raw == "" {
+		return []string{"openid", "profile", "email"}
+	}
+	fields := strings.Fields(raw)
+	if len(fields) == 0 {
+		return []string{"openid", "profile", "email"}
+	}
+	return fields
 }

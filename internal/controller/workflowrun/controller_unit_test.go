@@ -340,8 +340,9 @@ func TestConditionFunctions(t *testing.T) {
 	t.Run("setWorkflowNotFoundCondition", func(t *testing.T) {
 		wfr := newWFRun()
 		setWorkflowNotFoundCondition(wfr)
-		assertConditionCount(t, wfr, 2)
+		assertConditionCount(t, wfr, 3)
 		assertCondition(t, wfr, string(ConditionWorkflowRunning), metav1.ConditionFalse, "")
+		assertCondition(t, wfr, string(ConditionWorkflowFailed), metav1.ConditionTrue, string(ReasonWorkflowFailed))
 		assertCondition(t, wfr, string(ConditionWorkflowCompleted), metav1.ConditionTrue, string(ReasonWorkflowFailed))
 	})
 
@@ -956,6 +957,16 @@ func TestMakeRole(t *testing.T) {
 	if len(rule.Resources) != 1 || rule.Resources[0] != "workflowtaskresults" {
 		t.Errorf("expected resource 'workflowtaskresults', got %v", rule.Resources)
 	}
+	wantVerbs := []string{"create", "patch"}
+	if len(rule.Verbs) != len(wantVerbs) {
+		t.Fatalf("expected verbs %v, got %v", wantVerbs, rule.Verbs)
+	}
+	for i, v := range wantVerbs {
+		if rule.Verbs[i] != v {
+			t.Errorf("expected verbs %v, got %v", wantVerbs, rule.Verbs)
+			break
+		}
+	}
 }
 
 func TestMakeRoleBinding(t *testing.T) {
@@ -1530,7 +1541,9 @@ func TestValidationSkippedWhenRunReferenceSet(t *testing.T) {
 func TestSetComponentValidationFailedCondition(t *testing.T) {
 	wfr := &openchoreodevv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Generation: 1}}
 	setComponentValidationFailedCondition(wfr, "test message")
-	assertConditionCount(t, wfr, 1)
+	assertConditionCount(t, wfr, 3)
+	assertCondition(t, wfr, string(ConditionWorkflowRunning), metav1.ConditionFalse, string(ReasonWorkflowRunning))
+	assertCondition(t, wfr, string(ConditionWorkflowFailed), metav1.ConditionTrue, string(ReasonComponentValidationFailed))
 	assertCondition(t, wfr, string(ConditionWorkflowCompleted), metav1.ConditionTrue, string(ReasonComponentValidationFailed))
 	cond := findConditionByType(wfr.Status.Conditions, string(ConditionWorkflowCompleted))
 	if cond.Message != "test message" {

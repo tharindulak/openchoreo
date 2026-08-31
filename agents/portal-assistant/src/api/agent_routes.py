@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import Field, field_validator, model_validator
 
+from common.auth.authz_models import SubjectContext
+from common.auth.bearer import BearerTokenAuth
 from src.agent import stream_chat
-from src.auth import SubjectContext, require_authn, require_invoke_authz
-from src.auth.bearer import BearerTokenAuth
+from src.auth import require_authn, require_invoke_authz
 from src.clients import get_tools_for_user
 from src.models import BaseModel
 
@@ -75,6 +76,26 @@ class PrefetchedLogEntry(BaseModel):
     environment_name: str | None = Field(
         default=None, alias="environmentName", max_length=253,
     )
+
+
+class PendingDependency(BaseModel):
+    """An unresolved outbound endpoint dependency the Deploy tab read off the
+    binding's ``pendingConnections``.
+
+    Forwarded on ``dependency_pending`` chats so the agent names *which*
+    dependency is blocking without a discovery tool call and spends its
+    first call inspecting *why* it's down. Each field is size-capped so a
+    client can't blow the per-request content budget (counted by the
+    ChatRequest total-content validator below, which walks list-of-dict
+    string values).
+    """
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
+
+    project: str | None = Field(default=None, max_length=253)
+    component: str = Field(max_length=253)
+    endpoint: str | None = Field(default=None, max_length=253)
+    reason: str | None = Field(default=None, max_length=512)
 
 
 class ChatScope(BaseModel):
@@ -173,6 +194,17 @@ class ChatScope(BaseModel):
     # the validator below).
     prefetched_logs: list[PrefetchedLogEntry] | None = Field(
         default=None, alias="prefetchedLogs", max_length=50,
+    )
+
+    # ── Dependency-pending scope fields ────────────────────────────
+    # Set by the Deploy-tab "Investigate" button when a component is
+    # stuck NotReady because an outbound endpoint connection can't
+    # resolve. The dependency_pending prompt branch names these directly
+    # so the agent skips rediscovering them and inspects why each is down.
+    # Length-capped (per-row strings count toward _TOTAL_CONTENT_LIMIT
+    # via the validator below).
+    pending_dependencies: list[PendingDependency] | None = Field(
+        default=None, alias="pendingDependencies", max_length=50,
     )
 
     @field_validator("repo_url")

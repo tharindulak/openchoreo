@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:afdc829233119f8bb7ffc68839aaac57b3a4eda72947b2317ad218138fbd955a AS builder
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:d21c2dd538d409d050027f67cd09f0b84882cf59072cf77720b15e21f3fe6af5 AS builder
 
 ARG TARGETPLATFORM
 ARG BUILDPLATFORM
@@ -7,17 +7,19 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 ENV UV_PYTHON_INSTALL_DIR=/python
 ENV UV_PYTHON_PREFERENCE=only-managed
 
-COPY .python-version /tmp/.python-version
+COPY sre-agent/.python-version /tmp/.python-version
 RUN uv python install $(cat /tmp/.python-version)
 
 WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.cache/uv,id=uv-cache-${TARGETPLATFORM} \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project --no-dev --no-editable
+    --mount=type=bind,source=sre-agent/uv.lock,target=uv.lock \
+    --mount=type=bind,source=sre-agent/pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=common,target=/common \
+    uv sync --frozen --no-install-workspace --no-dev --no-editable
 
-COPY . /app
+COPY common /common
+COPY sre-agent /app
 
 RUN --mount=type=cache,target=/root/.cache/uv,id=uv-cache-${TARGETPLATFORM} \
     uv sync --frozen --no-dev --no-editable
@@ -38,7 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apt \
     echo "libz path: $LIBZ_PATH"; \
     cp "$LIBZ_PATH/libz.so.1" /lib/libz.so.1
 
-FROM gcr.io/distroless/cc-debian12@sha256:bd2899c12b335c827750ccf2359879eab09c09b206023dcebea408947d54127c
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36
 
 COPY --from=builder --chown=12000:12000 /python /python
 WORKDIR /app

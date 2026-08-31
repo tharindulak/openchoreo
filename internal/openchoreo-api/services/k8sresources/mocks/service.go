@@ -88,9 +88,9 @@ func (_c *MockService_GetResourceEvents_Call) RunAndReturn(run func(context.Cont
 	return _c
 }
 
-// GetResourceLogs provides a mock function with given fields: ctx, namespaceName, releaseBindingName, podName, sinceSeconds
-func (_m *MockService) GetResourceLogs(ctx context.Context, namespaceName string, releaseBindingName string, podName string, sinceSeconds *int64) (*models.ResourcePodLogsResponse, error) {
-	ret := _m.Called(ctx, namespaceName, releaseBindingName, podName, sinceSeconds)
+// GetResourceLogs provides a mock function with given fields: ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds
+func (_m *MockService) GetResourceLogs(ctx context.Context, namespaceName string, releaseBindingName string, podName string, container string, sinceSeconds *int64) (*models.ResourcePodLogsResponse, error) {
+	ret := _m.Called(ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetResourceLogs")
@@ -98,19 +98,19 @@ func (_m *MockService) GetResourceLogs(ctx context.Context, namespaceName string
 
 	var r0 *models.ResourcePodLogsResponse
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, *int64) (*models.ResourcePodLogsResponse, error)); ok {
-		return rf(ctx, namespaceName, releaseBindingName, podName, sinceSeconds)
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, string, *int64) (*models.ResourcePodLogsResponse, error)); ok {
+		return rf(ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, *int64) *models.ResourcePodLogsResponse); ok {
-		r0 = rf(ctx, namespaceName, releaseBindingName, podName, sinceSeconds)
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, string, string, *int64) *models.ResourcePodLogsResponse); ok {
+		r0 = rf(ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*models.ResourcePodLogsResponse)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, string, string, string, *int64) error); ok {
-		r1 = rf(ctx, namespaceName, releaseBindingName, podName, sinceSeconds)
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, string, string, *int64) error); ok {
+		r1 = rf(ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -128,14 +128,15 @@ type MockService_GetResourceLogs_Call struct {
 //   - namespaceName string
 //   - releaseBindingName string
 //   - podName string
+//   - container string
 //   - sinceSeconds *int64
-func (_e *MockService_Expecter) GetResourceLogs(ctx interface{}, namespaceName interface{}, releaseBindingName interface{}, podName interface{}, sinceSeconds interface{}) *MockService_GetResourceLogs_Call {
-	return &MockService_GetResourceLogs_Call{Call: _e.mock.On("GetResourceLogs", ctx, namespaceName, releaseBindingName, podName, sinceSeconds)}
+func (_e *MockService_Expecter) GetResourceLogs(ctx interface{}, namespaceName interface{}, releaseBindingName interface{}, podName interface{}, container interface{}, sinceSeconds interface{}) *MockService_GetResourceLogs_Call {
+	return &MockService_GetResourceLogs_Call{Call: _e.mock.On("GetResourceLogs", ctx, namespaceName, releaseBindingName, podName, container, sinceSeconds)}
 }
 
-func (_c *MockService_GetResourceLogs_Call) Run(run func(ctx context.Context, namespaceName string, releaseBindingName string, podName string, sinceSeconds *int64)) *MockService_GetResourceLogs_Call {
+func (_c *MockService_GetResourceLogs_Call) Run(run func(ctx context.Context, namespaceName string, releaseBindingName string, podName string, container string, sinceSeconds *int64)) *MockService_GetResourceLogs_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(string), args[4].(*int64))
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(string), args[4].(string), args[5].(*int64))
 	})
 	return _c
 }
@@ -145,7 +146,7 @@ func (_c *MockService_GetResourceLogs_Call) Return(_a0 *models.ResourcePodLogsRe
 	return _c
 }
 
-func (_c *MockService_GetResourceLogs_Call) RunAndReturn(run func(context.Context, string, string, string, *int64) (*models.ResourcePodLogsResponse, error)) *MockService_GetResourceLogs_Call {
+func (_c *MockService_GetResourceLogs_Call) RunAndReturn(run func(context.Context, string, string, string, string, *int64) (*models.ResourcePodLogsResponse, error)) *MockService_GetResourceLogs_Call {
 	_c.Call.Return(run)
 	return _c
 }
@@ -206,6 +207,67 @@ func (_c *MockService_GetResourceTree_Call) Return(_a0 *k8sresources.K8sResource
 }
 
 func (_c *MockService_GetResourceTree_Call) RunAndReturn(run func(context.Context, string, string) (*k8sresources.K8sResourceTreeResult, error)) *MockService_GetResourceTree_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
+// TriggerCronJob provides a mock function with given fields: ctx, namespaceName, releaseBindingName, overrides
+func (_m *MockService) TriggerCronJob(ctx context.Context, namespaceName string, releaseBindingName string, overrides *models.CronJobTriggerRequest) (*models.CronJobTriggerResponse, error) {
+	ret := _m.Called(ctx, namespaceName, releaseBindingName, overrides)
+
+	if len(ret) == 0 {
+		panic("no return value specified for TriggerCronJob")
+	}
+
+	var r0 *models.CronJobTriggerResponse
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *models.CronJobTriggerRequest) (*models.CronJobTriggerResponse, error)); ok {
+		return rf(ctx, namespaceName, releaseBindingName, overrides)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, string, string, *models.CronJobTriggerRequest) *models.CronJobTriggerResponse); ok {
+		r0 = rf(ctx, namespaceName, releaseBindingName, overrides)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*models.CronJobTriggerResponse)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, string, string, *models.CronJobTriggerRequest) error); ok {
+		r1 = rf(ctx, namespaceName, releaseBindingName, overrides)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// MockService_TriggerCronJob_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'TriggerCronJob'
+type MockService_TriggerCronJob_Call struct {
+	*mock.Call
+}
+
+// TriggerCronJob is a helper method to define mock.On call
+//   - ctx context.Context
+//   - namespaceName string
+//   - releaseBindingName string
+//   - overrides *models.CronJobTriggerRequest
+func (_e *MockService_Expecter) TriggerCronJob(ctx interface{}, namespaceName interface{}, releaseBindingName interface{}, overrides interface{}) *MockService_TriggerCronJob_Call {
+	return &MockService_TriggerCronJob_Call{Call: _e.mock.On("TriggerCronJob", ctx, namespaceName, releaseBindingName, overrides)}
+}
+
+func (_c *MockService_TriggerCronJob_Call) Run(run func(ctx context.Context, namespaceName string, releaseBindingName string, overrides *models.CronJobTriggerRequest)) *MockService_TriggerCronJob_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		run(args[0].(context.Context), args[1].(string), args[2].(string), args[3].(*models.CronJobTriggerRequest))
+	})
+	return _c
+}
+
+func (_c *MockService_TriggerCronJob_Call) Return(_a0 *models.CronJobTriggerResponse, _a1 error) *MockService_TriggerCronJob_Call {
+	_c.Call.Return(_a0, _a1)
+	return _c
+}
+
+func (_c *MockService_TriggerCronJob_Call) RunAndReturn(run func(context.Context, string, string, *models.CronJobTriggerRequest) (*models.CronJobTriggerResponse, error)) *MockService_TriggerCronJob_Call {
 	_c.Call.Return(run)
 	return _c
 }

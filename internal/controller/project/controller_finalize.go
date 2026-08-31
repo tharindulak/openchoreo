@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -51,8 +52,11 @@ func (r *Reconciler) finalize(ctx context.Context, old, project *openchoreov1alp
 
 	// Mark the project condition as finalizing and return so that the project will indicate that it is being finalized.
 	// The actual finalization will be done in the next reconcile loop triggered by the status update.
-	if meta.SetStatusCondition(&project.Status.Conditions, NewProjectFinalizingCondition(project.Generation)) {
-		return controller.UpdateStatusConditionsAndReturn(ctx, r.Client, old, project)
+	cond := meta.FindStatusCondition(project.Status.Conditions, string(ConditionFinalizing))
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		if meta.SetStatusCondition(&project.Status.Conditions, NewProjectFinalizingCondition(project.Generation)) {
+			return controller.UpdateStatusConditionsAndReturn(ctx, r.Client, old, project)
+		}
 	}
 
 	// Perform cleanup logic for deployment tracks
@@ -66,6 +70,9 @@ func (r *Reconciler) finalize(ctx context.Context, old, project *openchoreov1alp
 	// If deletion is still in progress, check in next cycle
 	if !artifactsDeleted {
 		logger.Info("Child resources are still being deleted", "name", project.Name)
+		if controller.MarkTrueCondition(project, ConditionFinalizing, ReasonProjectFinalizing, "Waiting for child resources to be deleted") {
+			return controller.UpdateStatusConditionsAndRequeueAfter(ctx, r.Client, old, project, time.Second*5)
+		}
 		return ctrl.Result{RequeueAfter: time.Second * 5}, nil
 	}
 
@@ -89,8 +96,35 @@ func (r *Reconciler) deleteChildAndLinkedResources(ctx context.Context, project 
 		logger.Error(err, "Failed to delete components")
 		return false, err
 	}
-	if !componentsDeleted {
-		logger.Info("Components are still being deleted", "name", project.Name)
+
+	// Clean up resources
+	resourcesDeleted, err := r.deleteResourcesAndWait(ctx, project)
+	if err != nil {
+		logger.Error(err, "Failed to delete resources")
+		return false, err
+	}
+
+	// Clean up project release bindings
+	bindingsDeleted, err := r.deleteProjectReleaseBindingsAndWait(ctx, project)
+	if err != nil {
+		logger.Error(err, "Failed to delete project release bindings")
+		return false, err
+	}
+
+	if !bindingsDeleted {
+		logger.Info("Waiting for ProjectReleaseBindings to be deleted before removing ProjectReleases", "name", project.Name)
+		return false, nil
+	}
+
+	// Clean up project releases
+	releasesDeleted, err := r.deleteProjectReleasesAndWait(ctx, project)
+	if err != nil {
+		logger.Error(err, "Failed to delete project releases")
+		return false, err
+	}
+
+	if !componentsDeleted || !resourcesDeleted || !releasesDeleted {
+		logger.Info("Children are still being deleted", "name", project.Name)
 		return false, nil
 	}
 
@@ -133,8 +167,113 @@ func (r *Reconciler) deleteComponentsAndWait(ctx context.Context, project *openc
 	logger.Info("Deleting owned Components", "count", len(componentsList.Items))
 	for i := range componentsList.Items {
 		component := &componentsList.Items[i]
+		if !component.DeletionTimestamp.IsZero() {
+			continue
+		}
 		if err := client.IgnoreNotFound(r.Delete(ctx, component)); err != nil {
 			return false, fmt.Errorf("failed to delete component %s: %w", component.Name, err)
+		}
+	}
+
+	return false, nil
+}
+
+// deleteResourcesAndWait checks if any Resources owned by this Project still exist,
+// and deletes them if they exist.
+func (r *Reconciler) deleteResourcesAndWait(ctx context.Context, project *openchoreov1alpha1.Project) (bool, error) {
+	logger := log.FromContext(ctx).WithValues("project", project.Name)
+
+	// List Resources owned by this Project using shared field index
+	resourcesList := &openchoreov1alpha1.ResourceList{}
+	if err := r.List(ctx, resourcesList,
+		client.InNamespace(project.Namespace),
+		client.MatchingFields{controller.IndexKeyResourceOwnerProjectName: project.Name}); err != nil {
+		return false, fmt.Errorf("failed to list resources: %w", err)
+	}
+
+	if len(resourcesList.Items) == 0 {
+		logger.Info("All resources are deleted")
+		return true, nil
+	}
+
+	// Delete all Resources owned by this Project
+	logger.Info("Deleting owned Resources", "count", len(resourcesList.Items))
+	for i := range resourcesList.Items {
+		resource := &resourcesList.Items[i]
+		if !resource.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, resource)); err != nil {
+			return false, fmt.Errorf("failed to delete resource %s: %w", resource.Name, err)
+		}
+	}
+
+	return false, nil
+}
+
+// deleteProjectReleaseBindingsAndWait checks if any ProjectReleaseBindings of this
+// Project still exist, and deletes them if they exist. Bindings are matched by
+// spec.owner.projectName regardless of author or OwnerReference: externally
+// authored bindings (console, occ, API, GitOps) carry no owner reference, and a
+// binding without its project is meaningless (the owner tuple is immutable).
+// Deleting a binding tears down its downstream state via the K8s GC walking the
+// binding's RenderedRelease to the applied manifests.
+func (r *Reconciler) deleteProjectReleaseBindingsAndWait(ctx context.Context, project *openchoreov1alpha1.Project) (bool, error) {
+	logger := log.FromContext(ctx).WithValues("project", project.Name)
+
+	bindingsList := &openchoreov1alpha1.ProjectReleaseBindingList{}
+	if err := r.List(ctx, bindingsList,
+		client.InNamespace(project.Namespace),
+		client.MatchingFields{controller.IndexKeyProjectReleaseBindingOwner: project.Name}); err != nil {
+		return false, fmt.Errorf("failed to list project release bindings: %w", err)
+	}
+
+	if len(bindingsList.Items) == 0 {
+		logger.Info("All project release bindings are deleted")
+		return true, nil
+	}
+
+	logger.Info("Deleting ProjectReleaseBindings", "count", len(bindingsList.Items))
+	for i := range bindingsList.Items {
+		binding := &bindingsList.Items[i]
+		if !binding.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, binding)); err != nil {
+			return false, fmt.Errorf("failed to delete project release binding %s: %w", binding.Name, err)
+		}
+	}
+
+	return false, nil
+}
+
+// deleteProjectReleasesAndWait checks if any ProjectReleases owned by this Project
+// still exist, and deletes them if they exist. ProjectReleases are deleted after
+// ProjectReleaseBindings have been successfully deleted, since a live binding pins
+// a ProjectRelease by name via spec.projectRelease.
+func (r *Reconciler) deleteProjectReleasesAndWait(ctx context.Context, project *openchoreov1alpha1.Project) (bool, error) {
+	logger := log.FromContext(ctx).WithValues("project", project.Name)
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	releasesList := &openchoreov1alpha1.ProjectReleaseList{}
+	if err := r.List(timeoutCtx, releasesList,
+		client.InNamespace(project.Namespace),
+		client.MatchingFields{controller.IndexKeyProjectReleaseOwner: project.Name}); err != nil {
+		return false, fmt.Errorf("failed to list project releases: %w", err)
+	}
+
+	if len(releasesList.Items) == 0 {
+		logger.Info("All project releases are deleted")
+		return true, nil
+	}
+
+	logger.Info("Deleting ProjectReleases", "count", len(releasesList.Items))
+	for i := range releasesList.Items {
+		release := &releasesList.Items[i]
+		if err := client.IgnoreNotFound(r.Delete(timeoutCtx, release)); err != nil {
+			return false, fmt.Errorf("failed to delete project release %s: %w", release.Name, err)
 		}
 	}
 

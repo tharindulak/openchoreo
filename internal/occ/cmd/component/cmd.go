@@ -223,6 +223,9 @@ If --env is not specified, uses the lowest environment from the deployment pipel
   # Get logs from a specific environment
   occ component logs my-component --env dev
 
+  # Get logs from a single container in a multi-container pod
+  occ component logs my-component --container main
+
   # Follow logs in real-time
   occ component logs my-component --env dev -f`,
 		Args:    cmdutil.ExactOneArgWithUsage(),
@@ -232,12 +235,14 @@ If --env is not specified, uses the lowest environment from the deployment pipel
 			if err != nil {
 				return err
 			}
+			container, _ := cmd.Flags().GetString("container")
 			tail := flags.GetTail(cmd)
 			return New(cl).Logs(LogsParams{
 				Namespace:   flags.GetNamespace(cmd),
 				Project:     flags.GetProject(cmd),
 				Component:   args[0],
 				Environment: flags.GetEnvironment(cmd),
+				Container:   container,
 				Follow:      flags.GetFollow(cmd),
 				Since:       flags.GetSince(cmd),
 				Tail:        tail,
@@ -247,6 +252,8 @@ If --env is not specified, uses the lowest environment from the deployment pipel
 	flags.AddNamespace(cmd)
 	flags.AddProject(cmd)
 	flags.AddEnvironment(cmd)
+	// No short alias: `-c` denotes --component elsewhere in the CLI.
+	cmd.Flags().String("container", "", "Container name to fetch logs from (defaults to all containers)")
 	flags.AddFollow(cmd)
 	flags.AddSince(cmd)
 	flags.AddTail(cmd)
@@ -293,6 +300,7 @@ If --env is not specified, uses the lowest environment from the deployment pipel
 				stdin = true
 			}
 
+			pod, _ := cmd.Flags().GetString("pod")
 			container, _ := cmd.Flags().GetString("container")
 
 			return New(cl).Exec(ExecParams{
@@ -300,6 +308,7 @@ If --env is not specified, uses the lowest environment from the deployment pipel
 				Project:     flags.GetProject(cmd),
 				Component:   componentName,
 				Environment: flags.GetEnvironment(cmd),
+				Pod:         pod,
 				Container:   container,
 				Command:     command,
 				TTY:         tty,
@@ -310,6 +319,7 @@ If --env is not specified, uses the lowest environment from the deployment pipel
 	flags.AddNamespace(cmd)
 	flags.AddProject(cmd)
 	flags.AddEnvironment(cmd)
+	cmd.Flags().String("pod", "", "Pod name to exec into (defaults to any ready pod)")
 	cmd.Flags().StringP("container", "c", "", "Container name to exec into (defaults to first container)")
 	cmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	cmd.Flags().BoolP("stdin", "i", false, "Pass stdin to the container")

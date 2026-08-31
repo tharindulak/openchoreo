@@ -26,6 +26,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "openchoreo-data-plane.clusterAgent.serviceAccountName" . }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if .Values.clusterAgent.priorityClass.create }}
       priorityClassName: {{ .Values.clusterAgent.priorityClass.name }}
       {{- end }}
@@ -41,13 +45,17 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.clusterAgent.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.clusterAgent.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: agent
-        image: "{{ .Values.clusterAgent.image.repository }}:{{ .Values.clusterAgent.image.tag | default .Chart.AppVersion }}"
+        image: "{{ include "openchoreo-data-plane.image" (dict "context" . "image" .Values.clusterAgent.image) }}"
         imagePullPolicy: {{ .Values.clusterAgent.image.pullPolicy }}
         args:
         - --server-url={{ .Values.clusterAgent.serverUrl }}

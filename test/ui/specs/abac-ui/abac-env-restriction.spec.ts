@@ -55,6 +55,48 @@ metadata:
 spec:
   deploymentPipelineRef:
     name: default
+  type:
+    kind: ClusterProjectType
+    name: default
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: ${PROJECT_NAME}-development
+  namespace: default
+  labels:
+    openchoreo.dev/project: ${PROJECT_NAME}
+    openchoreo.dev/environment: development
+spec:
+  owner:
+    projectName: ${PROJECT_NAME}
+  environment: development
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: ${PROJECT_NAME}-staging
+  namespace: default
+  labels:
+    openchoreo.dev/project: ${PROJECT_NAME}
+    openchoreo.dev/environment: staging
+spec:
+  owner:
+    projectName: ${PROJECT_NAME}
+  environment: staging
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: ${PROJECT_NAME}-production
+  namespace: default
+  labels:
+    openchoreo.dev/project: ${PROJECT_NAME}
+    openchoreo.dev/environment: production
+spec:
+  owner:
+    projectName: ${PROJECT_NAME}
+  environment: production
 ---
 apiVersion: openchoreo.dev/v1alpha1
 kind: ClusterAuthzRole

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +34,7 @@ import (
 	"github.com/openchoreo/openchoreo/internal/networkpolicy"
 	componentpipeline "github.com/openchoreo/openchoreo/internal/pipeline/component"
 	pipelinecontext "github.com/openchoreo/openchoreo/internal/pipeline/component/context"
+	"github.com/openchoreo/openchoreo/internal/template"
 )
 
 const (
@@ -76,6 +78,16 @@ type Reconciler struct {
 	// Pipeline is the component rendering pipeline, shared across all reconciliations.
 	// This enables CEL environment caching across different component types and reconciliations.
 	Pipeline *componentpipeline.Pipeline
+
+	// CELCostLimit bounds the accumulated cost of a single CEL expression.
+	// Zero selects the template engine's built-in default.
+	CELCostLimit uint64
+
+	// RenderTimeout bounds each rendering step of a reconcile separately, not the
+	// reconcile as a whole: a reconcile that renders more than once spends the
+	// timeout again at each step. Zero disables the deadline. It is handed to the
+	// pipeline at construction; the pipeline derives the deadline per entry point.
+	RenderTimeout time.Duration
 }
 
 // networkPolicyProviderFromDataPlane reads the "openchoreo.dev/networkpolicyprovider" annotation
@@ -537,8 +549,14 @@ func (r *Reconciler) reconcileRelease(ctx context.Context, releaseBinding *openc
 		ResourceDependencyItems:    resourceDepItems,
 	}
 
-	// Render resources using the shared pipeline instance
-	renderOutput, err := r.Pipeline.Render(renderInput)
+	// Seed one cost budget for this reconcile's rendering. The budget is an inert context
+	// value carrying no deadline, so nothing else in the reconcile is affected by it.
+	ctx = template.WithReconcileBudget(ctx, r.CELCostLimit)
+
+	// Render resources using the shared pipeline instance. The pipeline derives its own
+	// render deadline, so it bounds this call alone: the status writes below run without
+	// one and can still record a breach on the object.
+	renderOutput, err := r.Pipeline.Render(ctx, renderInput)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to render resources: %v", err)
 		controller.MarkFalseCondition(releaseBinding, ConditionReleaseSynced,
@@ -870,9 +888,20 @@ func (r *Reconciler) reconcileObservabilityRelease(
 	if len(observabilityPlaneReleaseResources) == 0 {
 		skipReason = "no observability resources to deploy"
 	} else {
-		// Try to resolve the ObservabilityPlane - this will use "default" if not explicitly specified
+		// Resolve the ObservabilityPlane (falls back to the default when not explicitly specified).
+		// Only a genuine not-found means there is nothing to attach to, so skipping is correct. A
+		// transient lookup failure must requeue instead: skipping it would tear down an already-deployed
+		// observability Release (see the cleanup below) and leave it absent until an unrelated reconcile.
 		if _, err := dataPlaneResult.GetObservabilityPlane(ctx, r.Client); err != nil {
-			skipReason = fmt.Sprintf("failed to resolve ObservabilityPlane: %v", err)
+			if !apierrors.IsNotFound(err) {
+				// Surface the transient failure on the status the same way the create/update path
+				// below does, then return so the item requeues with backoff.
+				msg := fmt.Sprintf("Failed to resolve ObservabilityPlane: %v", err)
+				controller.MarkFalseCondition(releaseBinding, ConditionReleaseSynced,
+					ReasonReleaseUpdateFailed, msg)
+				return observabilityReleaseResult{}, fmt.Errorf("failed to resolve ObservabilityPlane: %w", err)
+			}
+			skipReason = fmt.Sprintf("ObservabilityPlane not found: %v", err)
 			logger.Info("Skipping observability Release reconciliation", "reason", skipReason)
 		} else {
 			shouldManage = true
@@ -955,20 +984,35 @@ func (r *Reconciler) reconcileObservabilityRelease(
 	// Clean up existing observability Release if it exists but we no longer need it
 	// (e.g., ObservabilityPlaneRef was removed or no more observability resources)
 	existingObsRelease := &openchoreov1alpha1.RenderedRelease{}
-	if err := r.Get(ctx, types.NamespacedName{
+	switch err := r.Get(ctx, types.NamespacedName{
 		Name:      releaseName,
 		Namespace: releaseBinding.Namespace,
-	}, existingObsRelease); err == nil {
-		// Check if we own this release before deleting
+	}, existingObsRelease); {
+	case apierrors.IsNotFound(err):
+		// Nothing to clean up.
+	case err != nil:
+		// A transient read failure must requeue rather than silently leave a stale Release behind,
+		// and it is surfaced on the status the same way the resolution path above is.
+		msg := fmt.Sprintf("Failed to get observability Release for cleanup: %v", err)
+		controller.MarkFalseCondition(releaseBinding, ConditionReleaseSynced,
+			ReasonReleaseUpdateFailed, msg)
+		return result, fmt.Errorf("failed to get observability Release %q for cleanup: %w", releaseName, err)
+	default:
+		// Only delete a Release this ReleaseBinding owns.
 		hasOwner, ownerErr := controllerutil.HasOwnerReference(existingObsRelease.GetOwnerReferences(), releaseBinding, r.Scheme)
-		if ownerErr == nil && hasOwner {
+		if ownerErr != nil {
+			msg := fmt.Sprintf("Failed to check owner reference for observability Release %q: %v", releaseName, ownerErr)
+			controller.MarkFalseCondition(releaseBinding, ConditionReleaseSynced, ReasonReleaseUpdateFailed, msg)
+			return result, fmt.Errorf("failed to check owner reference for observability Release %q: %w", releaseName, ownerErr)
+		}
+		if hasOwner {
 			if deleteErr := r.Delete(ctx, existingObsRelease); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+				msg := fmt.Sprintf("Failed to delete stale observability Release %q: %v", releaseName, deleteErr)
+				controller.MarkFalseCondition(releaseBinding, ConditionReleaseSynced, ReasonReleaseUpdateFailed, msg)
 				logger.Error(deleteErr, "Failed to delete stale observability Release", "release", releaseName)
-				return result, deleteErr
+				return result, fmt.Errorf("failed to delete stale observability Release %q: %w", releaseName, deleteErr)
 			}
-			logger.Info("Deleted stale observability Release",
-				"release", releaseName,
-				"reason", "no ObservabilityPlaneRef configured or no observability resources")
+			logger.Info("Deleted stale observability Release", "release", releaseName, "reason", skipReason)
 		}
 	}
 
@@ -1058,7 +1102,9 @@ func buildComponentFromRelease(componentRelease *openchoreov1alpha1.ComponentRel
 func buildComponentTypeFromRelease(componentRelease *openchoreov1alpha1.ComponentRelease) *openchoreov1alpha1.ComponentType {
 	return &openchoreov1alpha1.ComponentType{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "from-release", // Name doesn't matter for rendering
+			// Name identifies the ComponentType in post-render validation error messages,
+			// so use the frozen reference name rather than a placeholder.
+			Name:      componentRelease.Spec.ComponentType.Name,
 			Namespace: componentRelease.Namespace,
 		},
 		Spec: componentRelease.Spec.ComponentType.Spec,
@@ -1517,6 +1563,13 @@ func (r *Reconciler) getDefaultNotificationChannelName(ctx context.Context, name
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Pipeline == nil {
+		r.Pipeline = componentpipeline.NewPipeline(
+			componentpipeline.WithCostLimit(r.CELCostLimit),
+			componentpipeline.WithRenderTimeout(r.RenderTimeout),
+		)
+	}
+
 	ctx := context.Background()
 
 	// Setup field index for SecretReferences (reads from status.secretReferenceNames)

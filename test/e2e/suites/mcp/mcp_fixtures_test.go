@@ -30,6 +30,19 @@ func mustYAMLDocs(objects ...any) string {
 	return strings.Join(docs, "\n---\n")
 }
 
+// cpNamespaceYAML renders a control-plane namespace (labelled so the
+// openchoreo-api recognises it as a CP namespace). Used by the authorization
+// cases that need additional namespaces beyond the suite's primary mcpNs.
+func cpNamespaceYAML(ns string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+  labels:
+    openchoreo.dev/control-plane: "true"
+`, ns)
+}
+
 func platformResourcesYAML(cpNamespace string, environments []string, projects []string) string {
 	promotionPaths := make([]openchoreov1alpha1.PromotionPath, 0)
 
@@ -102,9 +115,36 @@ func platformResourcesYAML(cpNamespace string, environments []string, projects [
 					"openchoreo.dev/name": proj,
 				},
 			},
-			Spec: openchoreov1alpha1.ProjectSpec{DeploymentPipelineRef: openchoreov1alpha1.DeploymentPipelineRef{Name: "default"}},
+			Spec: openchoreov1alpha1.ProjectSpec{
+				DeploymentPipelineRef: openchoreov1alpha1.DeploymentPipelineRef{Name: "default"},
+				Type:                  openchoreov1alpha1.ProjectTypeRef{Kind: openchoreov1alpha1.ProjectTypeRefKindClusterProjectType, Name: "default"},
+			},
 		})
 	}
 
 	return mustYAMLDocs(docs...)
+}
+
+// projectReleaseBindingYAML renders an unpinned ProjectReleaseBinding that
+// deploys the given project to the given environment, creating its cell (DP)
+// namespace. The MCP create_project tool does not author bindings, so the
+// suite applies this after the project is created. spec.projectRelease is left
+// unset; the Project controller seeds it once the first ProjectRelease is cut.
+func projectReleaseBindingYAML(cpNamespace, project, environment string) string {
+	binding := &openchoreov1alpha1.ProjectReleaseBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "ProjectReleaseBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      project + "-" + environment,
+			Namespace: cpNamespace,
+			Labels: map[string]string{
+				"openchoreo.dev/project":     project,
+				"openchoreo.dev/environment": environment,
+			},
+		},
+		Spec: openchoreov1alpha1.ProjectReleaseBindingSpec{
+			Owner:       openchoreov1alpha1.ProjectReleaseBindingOwner{ProjectName: project},
+			Environment: environment,
+		},
+	}
+	return mustYAMLDocs(binding)
 }

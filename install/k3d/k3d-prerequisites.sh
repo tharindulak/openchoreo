@@ -13,10 +13,10 @@ set -euo pipefail
 
 # -- versions (update these on release branches) --
 OPENCHOREO_REF="${OPENCHOREO_REF:-main}"   # overridable via env; defaults to main
-GATEWAY_API_VERSION="v1.4.1"
+GATEWAY_API_VERSION="v1.5.1"
 CERT_MANAGER_VERSION="v1.19.4"
 ESO_VERSION="2.0.1"
-KGATEWAY_VERSION="v2.2.1"
+KGATEWAY_VERSION="v2.3.1"
 OPENBAO_CHART_VERSION="0.25.6"
 
 # -- derived constants --
@@ -31,7 +31,7 @@ step() {
 
 step "Installing Gateway API CRDs ($GATEWAY_API_VERSION)..."
 kubectl apply --server-side \
-    -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/experimental-install.yaml"
+    -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 
 step "Installing cert-manager ($CERT_MANAGER_VERSION)..."
 helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager \
@@ -57,8 +57,7 @@ helm upgrade --install kgateway-crds oci://cr.kgateway.dev/kgateway-dev/charts/k
 step "Installing kgateway ($KGATEWAY_VERSION)..."
 helm upgrade --install kgateway oci://cr.kgateway.dev/kgateway-dev/charts/kgateway \
     --namespace "$CONTROL_PLANE_NS" --create-namespace \
-    --version "$KGATEWAY_VERSION" \
-    --set controller.extraEnv.KGW_ENABLE_GATEWAY_API_EXPERIMENTAL_FEATURES=true
+    --version "$KGATEWAY_VERSION"
 
 step "Installing OpenBao ($OPENBAO_CHART_VERSION)..."
 helm upgrade --install openbao oci://ghcr.io/openbao/charts/openbao \

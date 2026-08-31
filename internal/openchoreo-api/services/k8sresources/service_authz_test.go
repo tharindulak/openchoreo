@@ -117,10 +117,10 @@ func TestGetResourceLogs_AuthzCheck(t *testing.T) {
 		pdp := testutil.AllowPDP()
 		mockSvc, svc := newAuthzSvcWithRB(t, pdp)
 		expected := &models.ResourcePodLogsResponse{LogEntries: []models.PodLogEntry{{Log: "hello"}}}
-		mockSvc.On("GetResourceLogs", mock.Anything, "ns-1", "rb-1", "pod-1", (*int64)(nil)).
+		mockSvc.On("GetResourceLogs", mock.Anything, "ns-1", "rb-1", "pod-1", "", (*int64)(nil)).
 			Return(expected, nil)
 
-		result, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", nil)
+		result, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", "", nil)
 		require.NoError(t, err)
 		require.Equal(t, expected, result)
 		require.Len(t, pdp.Captured, 1)
@@ -133,7 +133,7 @@ func TestGetResourceLogs_AuthzCheck(t *testing.T) {
 		pdp := testutil.DenyPDP()
 		_, svc := newAuthzSvcWithRB(t, pdp)
 
-		_, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", nil)
+		_, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", "", nil)
 		require.ErrorIs(t, err, services.ErrForbidden)
 	})
 
@@ -141,7 +141,7 @@ func TestGetResourceLogs_AuthzCheck(t *testing.T) {
 		pdp := testutil.AllowPDP()
 		_, svc := newAuthzSvcWithRB(t, pdp)
 
-		_, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "nonexistent", "pod-1", nil)
+		_, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "nonexistent", "pod-1", "", nil)
 		require.ErrorIs(t, err, k8sresources.ErrReleaseBindingNotFound)
 		require.Empty(t, pdp.Captured)
 	})
@@ -151,11 +151,63 @@ func TestGetResourceLogs_AuthzCheck(t *testing.T) {
 		mockSvc, svc := newAuthzSvcWithRB(t, pdp)
 		since := int64(300)
 		expected := &models.ResourcePodLogsResponse{LogEntries: []models.PodLogEntry{{Log: "recent"}}}
-		mockSvc.On("GetResourceLogs", mock.Anything, "ns-1", "rb-1", "pod-1", &since).
+		mockSvc.On("GetResourceLogs", mock.Anything, "ns-1", "rb-1", "pod-1", "", &since).
 			Return(expected, nil)
 
-		result, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", &since)
+		result, err := svc.GetResourceLogs(testutil.AuthzContext(), "ns-1", "rb-1", "pod-1", "", &since)
 		require.NoError(t, err)
 		require.Equal(t, expected, result)
+	})
+}
+
+// --- TriggerCronJob ---
+
+func TestTriggerCronJob_AuthzCheck(t *testing.T) {
+	t.Run("allowed", func(t *testing.T) {
+		pdp := testutil.AllowPDP()
+		mockSvc, svc := newAuthzSvcWithRB(t, pdp)
+		expected := &models.CronJobTriggerResponse{JobName: "job-1"}
+		mockSvc.On("TriggerCronJob", mock.Anything, "ns-1", "rb-1", (*models.CronJobTriggerRequest)(nil)).
+			Return(expected, nil)
+
+		result, err := svc.TriggerCronJob(testutil.AuthzContext(), "ns-1", "rb-1", nil)
+		require.NoError(t, err)
+		require.Equal(t, expected, result)
+		require.Len(t, pdp.Captured, 1)
+		testutil.RequireEvalRequest(t, pdp.Captured[0],
+			"releasebinding:update", "releasebinding", "rb-1",
+			authzcore.ResourceHierarchy{Namespace: "ns-1", Project: "proj-1", Component: "comp-1"})
+	})
+
+	t.Run("denied", func(t *testing.T) {
+		pdp := testutil.DenyPDP()
+		_, svc := newAuthzSvcWithRB(t, pdp)
+
+		_, err := svc.TriggerCronJob(testutil.AuthzContext(), "ns-1", "rb-1", nil)
+		require.ErrorIs(t, err, services.ErrForbidden)
+	})
+
+	// Args ride on the same update action as a plain trigger; no extra check is made.
+	t.Run("args use the same update action", func(t *testing.T) {
+		pdp := testutil.AllowPDP()
+		mockSvc, svc := newAuthzSvcWithRB(t, pdp)
+		overrides := &models.CronJobTriggerRequest{Args: []string{"--mode", "backfill"}}
+		expected := &models.CronJobTriggerResponse{JobName: "job-1"}
+		mockSvc.On("TriggerCronJob", mock.Anything, "ns-1", "rb-1", overrides).Return(expected, nil)
+
+		result, err := svc.TriggerCronJob(testutil.AuthzContext(), "ns-1", "rb-1", overrides)
+		require.NoError(t, err)
+		require.Equal(t, expected, result)
+		require.Len(t, pdp.Captured, 1)
+		require.Equal(t, "releasebinding:update", pdp.Captured[0].Action)
+	})
+
+	t.Run("release binding not found skips authz", func(t *testing.T) {
+		pdp := testutil.AllowPDP()
+		_, svc := newAuthzSvcWithRB(t, pdp)
+
+		_, err := svc.TriggerCronJob(testutil.AuthzContext(), "ns-1", "nonexistent", nil)
+		require.ErrorIs(t, err, k8sresources.ErrReleaseBindingNotFound)
+		require.Empty(t, pdp.Captured)
 	})
 }

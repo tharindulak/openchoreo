@@ -14,8 +14,15 @@ type TracingAdapter interface {
 	GetTraces(ctx context.Context, params TracesQueryParams) (*TracesQueryResult, error)
 	// GetSpans retrieves spans for a specific trace
 	GetSpans(ctx context.Context, traceID string, params TracesQueryParams) (*SpansResult, error)
-	// GetSpanDetails retrieves detailed information about a specific span
-	GetSpanDetails(ctx context.Context, traceID string, spanID string) (*SpanDetail, error)
+	// QuerySpanDetails retrieves detailed information about a specific span within a scope
+	QuerySpanDetails(ctx context.Context, traceID string, spanID string, params TracesQueryParams) (*SpanDetail, error)
+}
+
+// SpanStatus represents the execution status of a span, following the
+// OpenTelemetry span Status model (a status code plus an optional message).
+type SpanStatus struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 // SpanDetail represents detailed information about a single span
@@ -27,7 +34,7 @@ type SpanDetail struct {
 	StartTime          time.Time              `json:"startTime"`
 	EndTime            time.Time              `json:"endTime"`
 	DurationNs         int64                  `json:"durationNs"`
-	Status             string                 `json:"status,omitempty"`
+	Status             *SpanStatus            `json:"status,omitempty"`
 	Attributes         map[string]interface{} `json:"attributes,omitempty"`
 	ResourceAttributes map[string]interface{} `json:"resourceAttributes,omitempty"`
 }
@@ -89,7 +96,7 @@ type TraceSpan struct {
 	StartTime          time.Time              `json:"startTime"`
 	EndTime            time.Time              `json:"endTime"`
 	DurationNs         int64                  `json:"durationNs"`
-	Status             string                 `json:"status,omitempty"`
+	Status             *SpanStatus            `json:"status,omitempty"`
 	Attributes         map[string]interface{} `json:"attributes,omitempty"`
 	ResourceAttributes map[string]interface{} `json:"resourceAttributes,omitempty"`
 }

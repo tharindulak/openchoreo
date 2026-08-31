@@ -266,6 +266,58 @@ func TestBuildSpec_WithTraits(t *testing.T) {
 	})
 }
 
+func TestBuildSpec_DeterministicTraitOrder(t *testing.T) {
+	workload := &openchoreov1alpha1.WorkloadTemplateSpec{
+		Container: openchoreov1alpha1.Container{Image: "nginx:1.21"},
+	}
+
+	// Multiple traits across both kinds: mergeTraits ranges over maps, whose iteration
+	// order Go randomizes per range, so without a stable sort the frozen spec.traits order
+	// (which the release spec-hash matcher treats as significant) drifts between calls.
+	input := BuildInput{
+		Component:     makeComponent("proj", "comp", openchoreov1alpha1.ComponentSpec{}),
+		ComponentType: makeCT(),
+		Traits: map[string]openchoreov1alpha1.TraitSpec{
+			"zebra": {},
+			"alpha": {},
+			"mango": {},
+		},
+		ClusterTraits: map[string]openchoreov1alpha1.ClusterTraitSpec{
+			"yak":  {},
+			"beta": {},
+		},
+		Workload: workload,
+	}
+
+	// Sorted by (Kind, Name); "ClusterTrait" sorts before "Trait".
+	want := []openchoreov1alpha1.ComponentReleaseTrait{
+		{Kind: openchoreov1alpha1.TraitRefKindClusterTrait, Name: "beta"},
+		{Kind: openchoreov1alpha1.TraitRefKindClusterTrait, Name: "yak"},
+		{Kind: openchoreov1alpha1.TraitRefKindTrait, Name: "alpha"},
+		{Kind: openchoreov1alpha1.TraitRefKindTrait, Name: "mango"},
+		{Kind: openchoreov1alpha1.TraitRefKindTrait, Name: "zebra"},
+	}
+
+	// Repeated builds must yield the identical order (and it must be the sorted order).
+	// A single build could match the sorted order by chance, so require all N builds agree.
+	const iterations = 20
+	for i := 0; i < iterations; i++ {
+		spec, err := BuildSpec(input)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		if len(spec.Traits) != len(want) {
+			t.Fatalf("iteration %d: expected %d traits, got %d", i, len(want), len(spec.Traits))
+		}
+		for j := range want {
+			if spec.Traits[j].Kind != want[j].Kind || spec.Traits[j].Name != want[j].Name {
+				t.Fatalf("iteration %d: trait[%d] = %s/%s, want %s/%s",
+					i, j, spec.Traits[j].Kind, spec.Traits[j].Name, want[j].Kind, want[j].Name)
+			}
+		}
+	}
+}
+
 func TestBuildSpec_WithComponentTraits(t *testing.T) {
 	ct := makeCT()
 	workload := &openchoreov1alpha1.WorkloadTemplateSpec{
@@ -460,4 +512,66 @@ func TestBuildSpec_EmbeddedTraits(t *testing.T) {
 			t.Error("expected ClusterTrait:required-cluster-trait in traits slice")
 		}
 	})
+}
+
+// buildSpecForTest builds a ComponentReleaseSpec from a minimal valid BuildInput
+// carrying the given traits map, failing the test on any build error.
+func buildSpecForTest(t *testing.T, traits map[string]openchoreov1alpha1.TraitSpec) *openchoreov1alpha1.ComponentReleaseSpec {
+	t.Helper()
+	out, err := BuildSpec(BuildInput{
+		Component:     makeComponent("proj", "comp", openchoreov1alpha1.ComponentSpec{}),
+		ComponentType: makeCT(),
+		Traits:        traits,
+		Workload: &openchoreov1alpha1.WorkloadTemplateSpec{
+			Container: openchoreov1alpha1.Container{Image: "nginx:1.21"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec failed: %v", err)
+	}
+	return out
+}
+
+func TestBuildSpec_PreservesPostRenderValidations(t *testing.T) {
+	prv := []openchoreov1alpha1.PostRenderValidation{{
+		Target:  openchoreov1alpha1.PostRenderTarget{PatchTarget: openchoreov1alpha1.PatchTarget{Group: "apps", Version: "v1", Kind: "Deployment"}},
+		Rule:    "${resource.spec.replicas == 1}",
+		Message: "single replica",
+	}}
+	out := buildSpecForTest(t, map[string]openchoreov1alpha1.TraitSpec{
+		"t1": {PostRenderValidations: prv},
+	})
+	var found bool
+	for _, rt := range out.Traits {
+		if len(rt.Spec.PostRenderValidations) == 1 && rt.Spec.PostRenderValidations[0].Message == "single replica" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected postRenderValidations to survive freeze into ComponentReleaseSpec")
+	}
+}
+
+func TestBuildSpec_PreservesComponentTypePostRenderValidations(t *testing.T) {
+	ct := makeCT()
+	ct.Spec.PostRenderValidations = []openchoreov1alpha1.PostRenderValidation{{
+		Target:  openchoreov1alpha1.PostRenderTarget{PatchTarget: openchoreov1alpha1.PatchTarget{Group: "apps", Version: "v1", Kind: "Deployment"}},
+		Rule:    "${resource.spec.replicas == 1}",
+		Message: "single replica",
+	}}
+	out, err := BuildSpec(BuildInput{
+		Component:     makeComponent("proj", "comp", openchoreov1alpha1.ComponentSpec{}),
+		ComponentType: ct,
+		Workload: &openchoreov1alpha1.WorkloadTemplateSpec{
+			Container: openchoreov1alpha1.Container{Image: "nginx:1.21"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec failed: %v", err)
+	}
+	if len(out.ComponentType.Spec.PostRenderValidations) != 1 ||
+		out.ComponentType.Spec.PostRenderValidations[0].Message != "single replica" {
+		t.Fatalf("expected ComponentType postRenderValidations to survive freeze into ComponentReleaseSpec, got %+v",
+			out.ComponentType.Spec.PostRenderValidations)
+	}
 }

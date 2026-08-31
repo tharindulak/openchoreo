@@ -112,11 +112,30 @@ func platformResourcesYAML() string {
 		},
 		Spec: openchoreov1alpha1.ProjectSpec{
 			DeploymentPipelineRef: openchoreov1alpha1.DeploymentPipelineRef{Name: "default"},
+			Type:                  openchoreov1alpha1.ProjectTypeRef{Kind: openchoreov1alpha1.ProjectTypeRefKindClusterProjectType, Name: "default"},
+		},
+	}
+	// ProjectReleaseBinding deploys the project to the development environment,
+	// creating its cell (DP) namespace. spec.projectRelease is left unset; the
+	// Project controller seeds it once the first ProjectRelease is cut.
+	binding := &openchoreov1alpha1.ProjectReleaseBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "ProjectReleaseBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      projectName + releaseBindingSuffix,
+			Namespace: cpNs,
+			Labels: map[string]string{
+				"openchoreo.dev/project":     projectName,
+				"openchoreo.dev/environment": envDev,
+			},
+		},
+		Spec: openchoreov1alpha1.ProjectReleaseBindingSpec{
+			Owner:       openchoreov1alpha1.ProjectReleaseBindingOwner{ProjectName: projectName},
+			Environment: envDev,
 		},
 	}
 	docs := []any{pipeline}
 	docs = append(docs, envs...)
-	docs = append(docs, proj)
+	docs = append(docs, proj, binding)
 	return mustYAMLDocs(docs...)
 }
 
@@ -173,9 +192,9 @@ func componentWithImageYAML(name, componentType, image string, port int, args []
 	return mustYAMLDocs(comp, workload)
 }
 
-// scheduledTaskComponentYAML returns a Component + Workload + ReleaseBinding for
-// the cronjob/scheduled-task ClusterComponentType. The ReleaseBinding sets a
-// minute-frequency schedule so the test can observe a scheduled Job within ~60s.
+// scheduledTaskComponentYAML returns a Component + Workload for the
+// cronjob/scheduled-task ClusterComponentType. AutoDeploy creates the
+// ReleaseBinding; its schedule is patched in separately (scheduleOverridePatch).
 func scheduledTaskComponentYAML(name, image string) string {
 	comp := &openchoreov1alpha1.Component{
 		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "Component"},
@@ -212,28 +231,11 @@ func scheduledTaskComponentYAML(name, image string) string {
 			},
 		},
 	}
-	// ReleaseBinding override forces a 1-minute schedule so the test does not
-	// have to wait the sample's default 5 minutes for `lastScheduleTime`.
-	rb := map[string]any{
-		"apiVersion": openChoreoAPIVer,
-		"kind":       "ReleaseBinding",
-		"metadata": map[string]any{
-			"name":      name + releaseBindingSuffix,
-			"namespace": cpNs,
-		},
-		"spec": map[string]any{
-			"owner": map[string]any{
-				"projectName":   projectName,
-				"componentName": name,
-			},
-			"environment": envDev,
-			"componentTypeEnvironmentConfigs": map[string]any{
-				"schedule": "* * * * *",
-			},
-		},
-	}
-	return mustYAMLDocs(comp, workload, rb)
+	return mustYAMLDocs(comp, workload)
 }
+
+// scheduleOverridePatch forces a 1-minute schedule on the ReleaseBinding.
+const scheduleOverridePatch = `{"spec":{"componentTypeEnvironmentConfigs":{"schedule":"* * * * *"}}}`
 
 // testerPodYAML returns a busybox pod that sleeps forever, used as the source
 // of in-cluster wget probes against project-visibility workloads. Deployed in

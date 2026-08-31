@@ -128,9 +128,24 @@ func (t *TracingAdapter) GetSpans(ctx context.Context, traceID string, params ob
 	return convertSpansAdapterResponse(resp.JSON200), nil
 }
 
-// GetSpanDetails implements observability.TracingAdapter interface
-func (t *TracingAdapter) GetSpanDetails(ctx context.Context, traceID string, spanID string) (*observability.SpanDetail, error) {
-	resp, err := t.client.GetSpanDetailsForTraceWithResponse(ctx, traceID, spanID)
+// QuerySpanDetails implements observability.TracingAdapter interface
+func (t *TracingAdapter) QuerySpanDetails(ctx context.Context, traceID string, spanID string, params observability.TracesQueryParams) (*observability.SpanDetail, error) {
+	reqBody := gen.QuerySpanDetailsForTraceJSONRequestBody{
+		SearchScope: gen.ComponentSearchScope{
+			Namespace: params.Namespace,
+		},
+	}
+	if params.ProjectID != "" {
+		reqBody.SearchScope.Project = &params.ProjectID
+	}
+	if params.ComponentID != "" {
+		reqBody.SearchScope.Component = &params.ComponentID
+	}
+	if params.EnvironmentID != "" {
+		reqBody.SearchScope.Environment = &params.EnvironmentID
+	}
+
+	resp, err := t.client.QuerySpanDetailsForTraceWithResponse(ctx, traceID, spanID, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -147,6 +162,21 @@ func (t *TracingAdapter) GetSpanDetails(ctx context.Context, traceID string, spa
 	}
 
 	return convertSpanDetailResponse(resp.JSON200), nil
+}
+
+// convertGenSpanStatus maps the generated span status object to the domain type.
+func convertGenSpanStatus(status *gen.SpanStatus) *observability.SpanStatus {
+	if status == nil {
+		return nil
+	}
+	result := &observability.SpanStatus{}
+	if status.Code != nil {
+		result.Code = string(*status.Code)
+	}
+	if status.Message != nil {
+		result.Message = *status.Message
+	}
+	return result
 }
 
 func convertSpanDetailResponse(resp *gen.TraceSpanDetailsResponse) *observability.SpanDetail {
@@ -174,16 +204,14 @@ func convertSpanDetailResponse(resp *gen.TraceSpanDetailsResponse) *observabilit
 		detail.SpanKind = *resp.SpanKind
 	}
 	if resp.Status != nil {
-		detail.Status = string(*resp.Status)
+		detail.Status = convertGenSpanStatus(resp.Status)
 	}
 
 	if resp.Attributes != nil {
-		detail.Attributes = make(map[string]interface{}, len(*resp.Attributes))
-		for _, attr := range *resp.Attributes {
-			if attr.Key != nil && attr.Value != nil {
-				detail.Attributes[*attr.Key] = *attr.Value
-			}
-		}
+		detail.Attributes = *resp.Attributes
+	}
+	if resp.ResourceAttributes != nil {
+		detail.ResourceAttributes = *resp.ResourceAttributes
 	}
 
 	return detail
@@ -224,7 +252,7 @@ func convertSpansAdapterResponse(resp *gen.TraceSpansQueryResponse) *observabili
 				span.SpanKind = *s.SpanKind
 			}
 			if s.Status != nil {
-				span.Status = string(*s.Status)
+				span.Status = convertGenSpanStatus(s.Status)
 			}
 			if s.Attributes != nil {
 				span.Attributes = *s.Attributes

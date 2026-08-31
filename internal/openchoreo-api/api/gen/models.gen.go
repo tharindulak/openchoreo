@@ -240,9 +240,33 @@ const (
 	ObservabilityPlaneRefKindObservabilityPlane        ObservabilityPlaneRefKind = "ObservabilityPlane"
 )
 
+// Defines values for PostRenderValidationTargetPlane.
+const (
+	PostRenderValidationTargetPlaneDataplane          PostRenderValidationTargetPlane = "dataplane"
+	PostRenderValidationTargetPlaneObservabilityplane PostRenderValidationTargetPlane = "observabilityplane"
+)
+
+// Defines values for ProjectReleaseSpecProjectTypeKind.
+const (
+	ProjectReleaseSpecProjectTypeKindClusterProjectType ProjectReleaseSpecProjectTypeKind = "ClusterProjectType"
+	ProjectReleaseSpecProjectTypeKindProjectType        ProjectReleaseSpecProjectTypeKind = "ProjectType"
+)
+
 // Defines values for ProjectSpecDeploymentPipelineRefKind.
 const (
 	ProjectSpecDeploymentPipelineRefKindDeploymentPipeline ProjectSpecDeploymentPipelineRefKind = "DeploymentPipeline"
+)
+
+// Defines values for ProjectTypeRefKind.
+const (
+	ProjectTypeRefKindClusterProjectType ProjectTypeRefKind = "ClusterProjectType"
+	ProjectTypeRefKindProjectType        ProjectTypeRefKind = "ProjectType"
+)
+
+// Defines values for ProjectTypeSpecResourcesTargetPlane.
+const (
+	ProjectTypeSpecResourcesTargetPlaneDataplane          ProjectTypeSpecResourcesTargetPlane = "dataplane"
+	ProjectTypeSpecResourcesTargetPlaneObservabilityplane ProjectTypeSpecResourcesTargetPlane = "observabilityplane"
 )
 
 // Defines values for PromotionPathSourceEnvironmentRefKind.
@@ -348,6 +372,12 @@ const (
 	TargetPlaneRefKindWorkflowPlane        TargetPlaneRefKind = "WorkflowPlane"
 )
 
+// Defines values for TraitRemoveTargetPlane.
+const (
+	TraitRemoveTargetPlaneDataplane          TraitRemoveTargetPlane = "dataplane"
+	TraitRemoveTargetPlaneObservabilityplane TraitRemoveTargetPlane = "observabilityplane"
+)
+
 // Defines values for TraitSpecCreatesTargetPlane.
 const (
 	TraitSpecCreatesTargetPlaneDataplane          TraitSpecCreatesTargetPlane = "dataplane"
@@ -363,8 +393,8 @@ const (
 
 // Defines values for TraitSpecPatchesTargetPlane.
 const (
-	TraitSpecPatchesTargetPlaneDataplane          TraitSpecPatchesTargetPlane = "dataplane"
-	TraitSpecPatchesTargetPlaneObservabilityplane TraitSpecPatchesTargetPlane = "observabilityplane"
+	Dataplane          TraitSpecPatchesTargetPlane = "dataplane"
+	Observabilityplane TraitSpecPatchesTargetPlane = "observabilityplane"
 )
 
 // Defines values for WorkflowPlaneRefKind.
@@ -801,6 +831,12 @@ type ClusterComponentTypeSpec struct {
 	// Parameters Schema section using openAPIV3Schema format
 	Parameters *SchemaSection `json:"parameters,omitempty"`
 
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
 	// Resources Templates that generate Kubernetes resources dynamically
 	Resources []struct {
 		// ForEach CEL expression for generating multiple resources from a list
@@ -840,7 +876,7 @@ type ClusterComponentTypeSpec struct {
 		Parameters *map[string]interface{} `json:"parameters,omitempty"`
 	} `json:"traits,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 
 	// WorkloadType Primary workload resource type for this component type
@@ -993,6 +1029,35 @@ type ClusterObservabilityPlaneStatus struct {
 	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 }
 
+// ClusterProjectType ClusterProjectType resource.
+// Cluster-scoped sibling of ProjectType. Projects in any namespace can reference it.
+type ClusterProjectType struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec Desired state of a (Cluster)ProjectType.
+	Spec *ProjectTypeSpec `json:"spec,omitempty"`
+
+	// Status ClusterProjectType status (currently empty)
+	Status *map[string]interface{} `json:"status,omitempty"`
+}
+
+// ClusterProjectTypeList Paginated list of cluster project types
+type ClusterProjectTypeList struct {
+	Items []ClusterProjectType `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
 // ClusterResourceType ClusterResourceType resource.
 // Cluster-scoped sibling of ResourceType. Resources in any namespace can reference it.
 type ClusterResourceType struct {
@@ -1114,7 +1179,16 @@ type ClusterTraitSpec struct {
 		Var *string `json:"var,omitempty"`
 	} `json:"patches,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
+	// Removes Whole resources to delete that were previously produced by the ComponentType or earlier traits. Workload resource kinds (e.g. Deployment, StatefulSet, CronJob) cannot be removed.
+	Removes *[]TraitRemove `json:"removes,omitempty"`
+
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 }
 
@@ -1480,6 +1554,12 @@ type ComponentTypeSpec struct {
 	// Parameters Schema section using openAPIV3Schema format
 	Parameters *SchemaSection `json:"parameters,omitempty"`
 
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
 	// Resources Templates that generate Kubernetes resources dynamically
 	Resources []struct {
 		// ForEach CEL expression for generating multiple resources from a list
@@ -1519,7 +1599,7 @@ type ComponentTypeSpec struct {
 		Parameters *map[string]interface{} `json:"parameters,omitempty"`
 	} `json:"traits,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 
 	// WorkloadType Primary workload resource type for this component type
@@ -1721,6 +1801,24 @@ type CreateWorkflowRunRequest struct {
 
 	// WorkflowName Name of the workflow to execute
 	WorkflowName string `json:"workflowName"`
+}
+
+// CronJobTriggerRequest Optional per-run overrides applied to the Job created from a manual cronjob trigger
+type CronJobTriggerRequest struct {
+	// Args Replaces the container args for this run only. An empty array clears the args inherited from the CronJob's jobTemplate; omitting the field or sending null keeps them. Applies to the container named `main`, or to the only container if the pod has exactly one.
+	Args *[]string `json:"args"`
+}
+
+// CronJobTriggerResponse Response describing the Job created from a manual cronjob trigger
+type CronJobTriggerResponse struct {
+	// CronJobName Name of the CronJob the Job was created from
+	CronJobName string `json:"cronJobName"`
+
+	// JobName Name of the Job that was created from the CronJob's jobTemplate
+	JobName string `json:"jobName"`
+
+	// Namespace Data plane namespace where the Job was created
+	Namespace string `json:"namespace"`
 }
 
 // DataPlane DataPlane resource.
@@ -2016,8 +2114,8 @@ type EvaluateRequest struct {
 	// Resource Resource for authorization evaluation
 	Resource Resource `json:"resource"`
 
-	// SubjectContext Authenticated subject context
-	SubjectContext SubjectContext `json:"subject_context"`
+	// SubjectContext Subject to evaluate. Optional; defaults to the authenticated caller when omitted.
+	SubjectContext *SubjectContext `json:"subject_context,omitempty"`
 }
 
 // ExternalRef Reference to an external CR whose spec is resolved and injected into the CEL context under the given id.
@@ -2560,12 +2658,57 @@ type PendingConnection struct {
 
 // PodLogEntry A single log entry from a pod
 type PodLogEntry struct {
+	// Container Name of the container that produced this log entry
+	Container string `json:"container"`
+
 	// Log Log message content
 	Log string `json:"log"`
 
 	// Timestamp Timestamp of the log entry in RFC3339 format
 	Timestamp time.Time `json:"timestamp"`
 }
+
+// PostRenderValidation CEL-based validation rule evaluated after all traits are applied, against the final rendered Kubernetes resources
+type PostRenderValidation struct {
+	// ForEach Optional CEL expression yielding a list; the validation is repeated per item with the loop variable bound. Requires var.
+	ForEach *string `json:"forEach,omitempty"`
+
+	// Message Error message shown when the rule evaluates to false
+	Message string `json:"message"`
+
+	// Rule CEL expression wrapped in ${...}, evaluated with resource bound to each match; must evaluate to true
+	Rule string `json:"rule"`
+
+	// Target Rendered resources this validation applies to
+	Target struct {
+		// Group API group of the resource
+		Group string `json:"group"`
+
+		// Kind Resource type to select
+		Kind string `json:"kind"`
+
+		// MustMatch Require at least one rendered resource to match this target; when true and none match, the validation fails
+		MustMatch *bool `json:"mustMatch,omitempty"`
+
+		// Version API version of the resource
+		Version string `json:"version"`
+
+		// Where CEL expression to filter which resources to select
+		Where *string `json:"where,omitempty"`
+	} `json:"target"`
+
+	// TargetPlane Plane to scope selection to; without it a rule matches resources of the same GVK across every plane
+	TargetPlane *PostRenderValidationTargetPlane `json:"targetPlane,omitempty"`
+
+	// Var Loop variable name for forEach iterations; available in target.where and rule. Required when forEach is set.
+	Var *string `json:"var,omitempty"`
+
+	// When Optional CEL guard evaluated against the source's context; if it evaluates to false the validation is skipped
+	When *string `json:"when,omitempty"`
+}
+
+// PostRenderValidationTargetPlane Plane to scope selection to; without it a rule matches resources of the same GVK across every plane
+type PostRenderValidationTargetPlane string
 
 // Project Project resource.
 // Projects group components within a namespace and reference a deployment pipeline.
@@ -2594,6 +2737,131 @@ type ProjectList struct {
 	Pagination Pagination `json:"pagination"`
 }
 
+// ProjectRelease ProjectRelease resource.
+// Immutable snapshot of Project.spec and the referenced (Cluster)ProjectType.spec
+// at the time it was cut. Normally cut by the Project controller; the create
+// endpoint is exposed only for offline-emit parity. Spec is immutable.
+type ProjectRelease struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec Desired state of a ProjectRelease. Immutable after creation.
+	Spec *ProjectReleaseSpec `json:"spec,omitempty"`
+
+	// Status ProjectRelease status (currently empty, immutable after creation)
+	Status *map[string]interface{} `json:"status,omitempty"`
+}
+
+// ProjectReleaseBinding ProjectReleaseBinding resource.
+// Pins a ProjectRelease to an Environment, owns the namespace for the
+// (Project, Environment) tuple, and applies the inlined
+// (Cluster)ProjectType resources to that namespace. Authored externally.
+type ProjectReleaseBinding struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec Desired state of a ProjectReleaseBinding. spec.owner and spec.environment
+	// are immutable after creation. spec.projectRelease is the promote pin:
+	// left unset, the Project controller seeds it once with the project's
+	// latest release; advancing it afterwards is manual (API update, GitOps,
+	// kubectl edit).
+	Spec   *ProjectReleaseBindingSpec   `json:"spec,omitempty"`
+	Status *ProjectReleaseBindingStatus `json:"status,omitempty"`
+}
+
+// ProjectReleaseBindingList Paginated list of project release bindings
+type ProjectReleaseBindingList struct {
+	Items []ProjectReleaseBinding `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
+// ProjectReleaseBindingSpec Desired state of a ProjectReleaseBinding. spec.owner and spec.environment
+// are immutable after creation. spec.projectRelease is the promote pin:
+// left unset, the Project controller seeds it once with the project's
+// latest release; advancing it afterwards is manual (API update, GitOps,
+// kubectl edit).
+type ProjectReleaseBindingSpec struct {
+	// Environment Target environment name. Immutable after creation.
+	Environment string `json:"environment"`
+
+	// EnvironmentConfigs Per-environment values for the inlined (Cluster)ProjectType.spec.environmentConfigs.
+	EnvironmentConfigs *map[string]interface{} `json:"environmentConfigs,omitempty"`
+
+	// Owner Identifies the project this binding belongs to.
+	Owner struct {
+		// ProjectName Parent project name
+		ProjectName string `json:"projectName"`
+	} `json:"owner"`
+
+	// ProjectRelease Pinned ProjectRelease name. Left unset, it is seeded once by the Project controller with the latest release; advanced manually afterwards (e.g. via `occ project promote`).
+	ProjectRelease *string `json:"projectRelease,omitempty"`
+}
+
+// ProjectReleaseBindingStatus Observed state of a ProjectReleaseBinding.
+type ProjectReleaseBindingStatus struct {
+	// Conditions Latest available observations of the binding's state. Includes Synced, NamespaceReady, ResourcesReady, and Ready (aggregate).
+	Conditions *[]Condition `json:"conditions,omitempty"`
+
+	// Namespace The data-plane namespace owned by this binding.
+	Namespace *string `json:"namespace,omitempty"`
+
+	// ObservedGeneration Most recent generation observed by the controller.
+	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
+}
+
+// ProjectReleaseList Paginated list of project releases
+type ProjectReleaseList struct {
+	Items []ProjectRelease `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
+// ProjectReleaseSpec Desired state of a ProjectRelease. Immutable after creation.
+type ProjectReleaseSpec struct {
+	// Owner Identifies the project this ProjectRelease belongs to.
+	Owner struct {
+		// ProjectName Parent project name
+		ProjectName string `json:"projectName"`
+	} `json:"owner"`
+
+	// Parameters Snapshot of parameter values from Project.spec at release time.
+	Parameters *map[string]interface{} `json:"parameters,omitempty"`
+
+	// ProjectType Frozen snapshot of the referenced (Cluster)ProjectType.
+	ProjectType struct {
+		// Kind Source kind (ProjectType or ClusterProjectType)
+		Kind ProjectReleaseSpecProjectTypeKind `json:"kind"`
+
+		// Name Source project type name
+		Name string `json:"name"`
+
+		// Spec Desired state of a (Cluster)ProjectType.
+		Spec ProjectTypeSpec `json:"spec"`
+	} `json:"projectType"`
+}
+
+// ProjectReleaseSpecProjectTypeKind Source kind (ProjectType or ClusterProjectType)
+type ProjectReleaseSpecProjectTypeKind string
+
 // ProjectSpec Desired state of a Project
 type ProjectSpec struct {
 	// DeploymentPipelineRef Reference to the DeploymentPipeline that defines the environments
@@ -2605,6 +2873,16 @@ type ProjectSpec struct {
 		// Name Name of the deployment pipeline resource
 		Name string `json:"name"`
 	} `json:"deploymentPipelineRef,omitempty"`
+
+	// Parameters Values for the parameter schema declared on the referenced
+	// (Cluster)ProjectType. Validated by the controller and inlined into
+	// each ProjectRelease snapshot.
+	Parameters *map[string]interface{} `json:"parameters,omitempty"`
+
+	// Type Reference to a ProjectType or ClusterProjectType template. Immutable
+	// after the Project is created. When omitted on create, the API defaults
+	// to the cluster-scoped `default` ClusterProjectType.
+	Type *ProjectTypeRef `json:"type,omitempty"`
 }
 
 // ProjectSpecDeploymentPipelineRefKind Kind of deployment pipeline resource
@@ -2615,9 +2893,97 @@ type ProjectStatus struct {
 	// Conditions Current state conditions of the Project
 	Conditions *[]Condition `json:"conditions,omitempty"`
 
+	// LatestRelease Most recent ProjectRelease cut for this Project. ProjectReleaseBindings pin spec.projectRelease to a value here (or an older release for rollback).
+	LatestRelease *struct {
+		// Hash Content hash of Project.spec + (Cluster)ProjectType.spec captured at release time
+		Hash string `json:"hash"`
+
+		// Name Name of the ProjectRelease resource
+		Name string `json:"name"`
+	} `json:"latestRelease,omitempty"`
+
 	// ObservedGeneration Generation of the most recently observed Project
 	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 }
+
+// ProjectType ProjectType resource.
+// PE-published template scoped to a namespace. Developers reference it from Project.spec.type.
+type ProjectType struct {
+	// ApiVersion API version of the resource
+	ApiVersion *string `json:"apiVersion,omitempty"`
+
+	// Kind Kind of the resource
+	Kind *string `json:"kind,omitempty"`
+
+	// Metadata Standard Kubernetes object metadata (without kind/apiVersion).
+	// Matches the structure of metav1.ObjectMeta for the fields exposed via the API.
+	Metadata ObjectMeta `json:"metadata"`
+
+	// Spec Desired state of a (Cluster)ProjectType.
+	Spec *ProjectTypeSpec `json:"spec,omitempty"`
+
+	// Status ProjectType status (currently empty)
+	Status *map[string]interface{} `json:"status,omitempty"`
+}
+
+// ProjectTypeList Paginated list of project types
+type ProjectTypeList struct {
+	Items []ProjectType `json:"items"`
+
+	// Pagination Cursor-based pagination metadata. Uses Kubernetes-native continuation tokens
+	// for efficient pagination through large result sets.
+	Pagination Pagination `json:"pagination"`
+}
+
+// ProjectTypeRef Reference to a ProjectType or ClusterProjectType template. Immutable
+// after the Project is created. When omitted on create, the API defaults
+// to the cluster-scoped `default` ClusterProjectType.
+type ProjectTypeRef struct {
+	// Kind Project type kind. Defaults to ProjectType (namespaced).
+	Kind *ProjectTypeRefKind `json:"kind,omitempty"`
+
+	// Name Template name.
+	Name string `json:"name"`
+}
+
+// ProjectTypeRefKind Project type kind. Defaults to ProjectType (namespaced).
+type ProjectTypeRefKind string
+
+// ProjectTypeSpec Desired state of a (Cluster)ProjectType.
+type ProjectTypeSpec struct {
+	// EnvironmentConfigs Schema section using openAPIV3Schema format
+	EnvironmentConfigs *SchemaSection `json:"environmentConfigs,omitempty"`
+
+	// Parameters Schema section using openAPIV3Schema format
+	Parameters *SchemaSection `json:"parameters,omitempty"`
+
+	// Resources Templates that generate namespace-scoped Kubernetes manifests applied to the namespace owned by every ProjectReleaseBinding of this type.
+	Resources []struct {
+		// ForEach CEL expression for generating multiple resources from a list.
+		ForEach *string `json:"forEach,omitempty"`
+
+		// Id Unique identifier for this resource within the project type.
+		Id string `json:"id"`
+
+		// IncludeWhen CEL expression determining if this resource should be created.
+		IncludeWhen *string `json:"includeWhen,omitempty"`
+
+		// TargetPlane Target plane for deployment.
+		TargetPlane *ProjectTypeSpecResourcesTargetPlane `json:"targetPlane,omitempty"`
+
+		// Template Kubernetes resource template with CEL expressions.
+		Template map[string]interface{} `json:"template"`
+
+		// Var Loop variable name when using forEach.
+		Var *string `json:"var,omitempty"`
+	} `json:"resources"`
+
+	// Validations CEL-based validation rules evaluated during rendering.
+	Validations *[]ValidationRule `json:"validations,omitempty"`
+}
+
+// ProjectTypeSpecResourcesTargetPlane Target plane for deployment.
+type ProjectTypeSpecResourcesTargetPlane string
 
 // PromotionPath Promotion path between environments
 type PromotionPath struct {
@@ -3555,6 +3921,36 @@ type TraitList struct {
 	Pagination Pagination `json:"pagination"`
 }
 
+// TraitRemove Whole resource to delete that was previously produced by the ComponentType or earlier traits. Shared by TraitSpec and ClusterTraitSpec.
+type TraitRemove struct {
+	// ForEach CEL expression for repeating this remove
+	ForEach *string `json:"forEach,omitempty"`
+
+	// Target Target resource to remove; matching resources are deleted entirely
+	Target struct {
+		// Group API group of the resource
+		Group string `json:"group"`
+
+		// Kind Resource type to remove
+		Kind string `json:"kind"`
+
+		// Version API version of the resource
+		Version string `json:"version"`
+
+		// Where CEL expression to filter which resources to remove
+		Where *string `json:"where,omitempty"`
+	} `json:"target"`
+
+	// TargetPlane Target plane for this remove
+	TargetPlane *TraitRemoveTargetPlane `json:"targetPlane,omitempty"`
+
+	// Var Loop variable name when using forEach
+	Var *string `json:"var,omitempty"`
+}
+
+// TraitRemoveTargetPlane Target plane for this remove
+type TraitRemoveTargetPlane string
+
 // TraitSpec Desired state of a Trait
 type TraitSpec struct {
 	// Creates New Kubernetes resources to create when this trait is applied
@@ -3620,7 +4016,16 @@ type TraitSpec struct {
 		Var *string `json:"var,omitempty"`
 	} `json:"patches,omitempty"`
 
-	// Validations CEL-based validation rules evaluated during rendering
+	// PostRenderValidations CEL-based validation rules evaluated after all traits are applied, against the final rendered Kubernetes resources
+	PostRenderValidations *[]PostRenderValidation `json:"postRenderValidations,omitempty"`
+
+	// PreRenderValidations CEL-based validation rules evaluated before rendering; replaces the deprecated validations field
+	PreRenderValidations *[]ValidationRule `json:"preRenderValidations,omitempty"`
+
+	// Removes Whole resources to delete that were previously produced by the ComponentType or earlier traits. Workload resource kinds (e.g. Deployment, StatefulSet, CronJob) cannot be removed.
+	Removes *[]TraitRemove `json:"removes,omitempty"`
+
+	// Validations CEL-based validation rules evaluated before rendering. Deprecated: use preRenderValidations (mutually exclusive).
 	Validations *[]ValidationRule `json:"validations,omitempty"`
 }
 
@@ -4146,6 +4551,9 @@ type ClusterDataPlaneNameParam = string
 // ClusterObservabilityPlaneNameParam defines model for ClusterObservabilityPlaneNameParam.
 type ClusterObservabilityPlaneNameParam = string
 
+// ClusterProjectTypeNameParam defines model for ClusterProjectTypeNameParam.
+type ClusterProjectTypeNameParam = string
+
 // ClusterResourceTypeNameParam defines model for ClusterResourceTypeNameParam.
 type ClusterResourceTypeNameParam = string
 
@@ -4208,6 +4616,15 @@ type ProjectNameParam = string
 
 // ProjectQueryParam defines model for ProjectQueryParam.
 type ProjectQueryParam = string
+
+// ProjectReleaseBindingNameParam defines model for ProjectReleaseBindingNameParam.
+type ProjectReleaseBindingNameParam = string
+
+// ProjectReleaseNameParam defines model for ProjectReleaseNameParam.
+type ProjectReleaseNameParam = string
+
+// ProjectTypeNameParam defines model for ProjectTypeNameParam.
+type ProjectTypeNameParam = string
 
 // ReleaseBindingNameParam defines model for ReleaseBindingNameParam.
 type ReleaseBindingNameParam = string
@@ -4366,6 +4783,23 @@ type ListClusterDataPlanesParams struct {
 
 // ListClusterObservabilityPlanesParams defines parameters for ListClusterObservabilityPlanes.
 type ListClusterObservabilityPlanesParams struct {
+	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
+	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
+	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
+	// Supports existence checks: "key" (label exists), "!key" (label does not exist).
+	// Multiple requirements are comma-separated and ANDed together.
+	LabelSelector *LabelSelectorParam `form:"labelSelector,omitempty" json:"labelSelector,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// ListClusterProjectTypesParams defines parameters for ListClusterProjectTypes.
+type ListClusterProjectTypesParams struct {
 	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
 	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
 	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
@@ -4642,8 +5076,65 @@ type ListObservabilityPlanesParams struct {
 	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// ListProjectReleaseBindingsParams defines parameters for ListProjectReleaseBindings.
+type ListProjectReleaseBindingsParams struct {
+	// Project Filter resources by project name
+	Project *ProjectQueryParam `form:"project,omitempty" json:"project,omitempty"`
+
+	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
+	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
+	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
+	// Supports existence checks: "key" (label exists), "!key" (label does not exist).
+	// Multiple requirements are comma-separated and ANDed together.
+	LabelSelector *LabelSelectorParam `form:"labelSelector,omitempty" json:"labelSelector,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// ListProjectReleasesParams defines parameters for ListProjectReleases.
+type ListProjectReleasesParams struct {
+	// Project Filter resources by project name
+	Project *ProjectQueryParam `form:"project,omitempty" json:"project,omitempty"`
+
+	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
+	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
+	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
+	// Supports existence checks: "key" (label exists), "!key" (label does not exist).
+	// Multiple requirements are comma-separated and ANDed together.
+	LabelSelector *LabelSelectorParam `form:"labelSelector,omitempty" json:"labelSelector,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // ListProjectsParams defines parameters for ListProjects.
 type ListProjectsParams struct {
+	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
+	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
+	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
+	// Supports existence checks: "key" (label exists), "!key" (label does not exist).
+	// Multiple requirements are comma-separated and ANDed together.
+	LabelSelector *LabelSelectorParam `form:"labelSelector,omitempty" json:"labelSelector,omitempty"`
+
+	// Limit Maximum number of items to return per page
+	Limit *LimitParam `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque pagination cursor from a previous response.
+	// Pass the `nextCursor` value from pagination metadata to fetch the next page.
+	Cursor *CursorParam `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// ListProjectTypesParams defines parameters for ListProjectTypes.
+type ListProjectTypesParams struct {
 	// LabelSelector A label selector to filter resources using Kubernetes label selector syntax.
 	// Supports equality-based requirements: "key=value" (equality), "key!=value" (inequality).
 	// Supports set-based requirements: "key in (val1,val2)" (value in set), "key notin (val1,val2)" (value not in set).
@@ -4698,6 +5189,9 @@ type GetReleaseBindingK8sResourceEventsParams struct {
 type GetReleaseBindingK8sResourceLogsParams struct {
 	// PodName Name of the pod
 	PodName string `form:"podName" json:"podName"`
+
+	// Container Name of the container to fetch logs from. If omitted, logs from all containers in the pod are returned, with each entry tagged by container.
+	Container *string `form:"container,omitempty" json:"container,omitempty"`
 
 	// SinceSeconds Number of seconds since which to show logs
 	SinceSeconds *int64 `form:"sinceSeconds,omitempty" json:"sinceSeconds,omitempty"`
@@ -4916,6 +5410,9 @@ type HandleAutoBuildParams struct {
 
 	// XEventKey Bitbucket webhook event-key header used to detect Bitbucket events.
 	XEventKey *string `json:"X-Event-Key,omitempty"`
+
+	// XHubSignature Bitbucket webhook HMAC-SHA256 signature (`sha256=<hex>`) used to validate Bitbucket events.
+	XHubSignature *string `json:"X-Hub-Signature,omitempty"`
 }
 
 // ListSecretsParams defines parameters for ListSecrets.
@@ -4960,6 +5457,12 @@ type CreateClusterObservabilityPlaneJSONRequestBody = ClusterObservabilityPlane
 
 // UpdateClusterObservabilityPlaneJSONRequestBody defines body for UpdateClusterObservabilityPlane for application/json ContentType.
 type UpdateClusterObservabilityPlaneJSONRequestBody = ClusterObservabilityPlane
+
+// CreateClusterProjectTypeJSONRequestBody defines body for CreateClusterProjectType for application/json ContentType.
+type CreateClusterProjectTypeJSONRequestBody = ClusterProjectType
+
+// UpdateClusterProjectTypeJSONRequestBody defines body for UpdateClusterProjectType for application/json ContentType.
+type UpdateClusterProjectTypeJSONRequestBody = ClusterProjectType
 
 // CreateClusterResourceTypeJSONRequestBody defines body for CreateClusterResourceType for application/json ContentType.
 type CreateClusterResourceTypeJSONRequestBody = ClusterResourceType
@@ -5051,11 +5554,26 @@ type CreateObservabilityPlaneJSONRequestBody = ObservabilityPlane
 // UpdateObservabilityPlaneJSONRequestBody defines body for UpdateObservabilityPlane for application/json ContentType.
 type UpdateObservabilityPlaneJSONRequestBody = ObservabilityPlane
 
+// CreateProjectReleaseBindingJSONRequestBody defines body for CreateProjectReleaseBinding for application/json ContentType.
+type CreateProjectReleaseBindingJSONRequestBody = ProjectReleaseBinding
+
+// UpdateProjectReleaseBindingJSONRequestBody defines body for UpdateProjectReleaseBinding for application/json ContentType.
+type UpdateProjectReleaseBindingJSONRequestBody = ProjectReleaseBinding
+
+// CreateProjectReleaseJSONRequestBody defines body for CreateProjectRelease for application/json ContentType.
+type CreateProjectReleaseJSONRequestBody = ProjectRelease
+
 // CreateProjectJSONRequestBody defines body for CreateProject for application/json ContentType.
 type CreateProjectJSONRequestBody = Project
 
 // UpdateProjectJSONRequestBody defines body for UpdateProject for application/json ContentType.
 type UpdateProjectJSONRequestBody = Project
+
+// CreateProjectTypeJSONRequestBody defines body for CreateProjectType for application/json ContentType.
+type CreateProjectTypeJSONRequestBody = ProjectType
+
+// UpdateProjectTypeJSONRequestBody defines body for UpdateProjectType for application/json ContentType.
+type UpdateProjectTypeJSONRequestBody = ProjectType
 
 // CreateReleaseBindingJSONRequestBody defines body for CreateReleaseBinding for application/json ContentType.
 type CreateReleaseBindingJSONRequestBody = ReleaseBinding
@@ -5125,6 +5643,9 @@ type HandleAutoBuildJSONRequestBody HandleAutoBuildJSONBody
 
 // CreateGitSecretJSONRequestBody defines body for CreateGitSecret for application/json ContentType.
 type CreateGitSecretJSONRequestBody = CreateGitSecretRequest
+
+// TriggerReleaseBindingCronJobJSONRequestBody defines body for TriggerReleaseBindingCronJob for application/json ContentType.
+type TriggerReleaseBindingCronJobJSONRequestBody = CronJobTriggerRequest
 
 // CreateSecretJSONRequestBody defines body for CreateSecret for application/json ContentType.
 type CreateSecretJSONRequestBody = CreateSecretRequest

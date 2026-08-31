@@ -54,21 +54,33 @@ data:
           scopes:
             {{- toYaml .scopes | nindent 12 }}
         {{- end }}
+      mcp_oauth_scopes:
+        {{- toYaml .Values.security.oidc.mcpOAuthScopes | nindent 8 }}
 
     mcp:
       enabled: {{ .Values.openchoreoApi.config.mcp.enabled }}
       toolsets:
         {{- toYaml .Values.openchoreoApi.config.mcp.toolsets | nindent 8 }}
 
+    audit:
+      enabled: {{ .Values.openchoreoApi.config.audit.enabled }}
+      defaults:
+        {{- toYaml .Values.openchoreoApi.config.audit.defaults | nindent 8 }}
+      policies:
+        {{- toYaml .Values.openchoreoApi.config.audit.policies | nindent 8 }}
+
     secret_management:
       enabled: {{ .Values.features.secretManagement.enabled }}
+      remote_key_prefix: {{ .Values.features.secretManagement.remoteKeyPrefix | quote }}
 
     cluster_gateway:
       enabled: {{ if hasKey .Values.openchoreoApi.clusterGateway "enabled" }}{{ .Values.openchoreoApi.clusterGateway.enabled }}{{ else }}true{{ end }}
       url: {{ .Values.openchoreoApi.clusterGateway.url | quote }}
       tls:
-        {{- if .Values.clusterGateway.tls.enabled }}
         ca_cert_path: {{ .Values.openchoreoApi.clusterGateway.tls.caPath | quote }}
+        {{- if .Values.clusterGateway.internalMtls.enabled }}
+        client_cert_path: {{ .Values.openchoreoApi.clusterGateway.tls.clientCertPath | quote }}
+        client_key_path: {{ .Values.openchoreoApi.clusterGateway.tls.clientKeyPath | quote }}
         {{- end }}
         insecure: {{ .Values.openchoreoApi.clusterGateway.tls.insecure }}
 

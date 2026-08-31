@@ -24,7 +24,9 @@ func peToolSpecs() []toolTestSpec {
 	specs = append(specs, peClusterPlatformStandardsSpecs()...)
 	specs = append(specs, pePlatformStandardsSpecs()...)
 	specs = append(specs, peResourceTypeSpecs()...)
+	specs = append(specs, peProjectTypeSpecs()...)
 	specs = append(specs, peResourceReleaseSpecs()...)
+	specs = append(specs, peProjectReleaseSpecs()...)
 	specs = append(specs, peDiagnosticsSpecs()...)
 	specs = append(specs, peAuthzSpecs()...)
 	return specs
@@ -1143,7 +1145,7 @@ func peDiagnosticsSpecs() []toolTestSpec {
 			descriptionKeywords: []string{"log"},
 			descriptionMinLen:   10,
 			requiredParams:      []string{"namespace_name", "release_binding_name", "pod_name"},
-			optionalParams:      []string{"since_seconds"},
+			optionalParams:      []string{"container", "since_seconds"},
 			testArgs: map[string]any{
 				"namespace_name":       testNamespaceName,
 				"release_binding_name": "binding-dev",

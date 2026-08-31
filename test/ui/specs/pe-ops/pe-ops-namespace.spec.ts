@@ -9,6 +9,7 @@ import { DeletePO } from '../../po/delete';
 import { CatalogTablePO } from '../../po/catalogTable';
 import { ScaffolderWizardPO } from '../../po/scaffolderWizard';
 import { CreatePO } from '../../po/create';
+import { DEFAULT_PROJECT_TYPE_TEMPLATE } from '../../po/project';
 
 // Namespace names must be valid Kubernetes namespace names: lowercase
 // alphanumeric + '-', no leading/trailing hyphens, max 63 characters.
@@ -170,12 +171,12 @@ test.describe('pe-ops: Namespace lifecycle through the Backstage UI', () => {
     test.setTimeout(300_000);
 
     await page.goto('/');
-    await new CreatePO(page).chooseTemplate('Project');
+    await new CreatePO(page).chooseProjectTemplate(DEFAULT_PROJECT_TYPE_TEMPLATE);
 
     const wizard = new ScaffolderWizardPO(page);
 
     // The NamespaceEntityPicker auto-selects 'default'; override to our namespace.
-    await wizard.selectMuiOption('Namespace Name', NAMESPACE_NAME);
+    await wizard.selectMuiOption('Namespace', NAMESPACE_NAME);
 
     // The DeploymentPipelinePicker auto-populates once the namespace is set.
     // Wait for it to resolve before filling other fields.
@@ -286,16 +287,17 @@ test.describe('pe-ops: Namespace lifecycle through the Backstage UI', () => {
     await del.openOverflowAndDelete('Namespace');
     await del.confirm();
 
-    // Cross-check: the Kubernetes namespace must be gone (or terminating).
+    // Assert phase, not existence: gone ('') or Terminating both prove the delete
+    // fired; full teardown waits on the finalizer cascade we don't gate on. Default
+    // check:true so a real kubectl error fails instead of passing as empty output.
     await expect
       .poll(
         () =>
-          kubectl(
-            ['get', 'namespace', NAMESPACE_NAME, '--ignore-not-found', '-o', 'name'],
-            { check: false },
-          ).stdout.trim(),
+          kubectl([
+            'get', 'namespace', NAMESPACE_NAME, '--ignore-not-found', '-o', 'jsonpath={.status.phase}',
+          ]).stdout.trim(),
         { timeout: 60_000, intervals: [3_000] },
       )
-      .toBe('');
+      .not.toBe('Active');
   });
 });

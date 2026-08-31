@@ -4,7 +4,9 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive
 	. "github.com/onsi/gomega"    //nolint:revive
 
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
 	"github.com/openchoreo/openchoreo/test/e2e/framework"
 )
 
@@ -122,10 +125,6 @@ var _ = Describe("Build From Source Matrix", Ordered, Label("tier3"), func() {
 		output, err = framework.KubectlApplyLiteral(kubeContext, platformResourcesYAML())
 		Expect(err).NotTo(HaveOccurred(), "failed to apply platform resources: %s", output)
 
-		By("triggering all matrix builds up front so they run concurrently")
-		for _, spec := range matrixSpecs {
-			triggerDeployableBuildSpec(spec)
-		}
 	})
 
 	AfterAll(func() {
@@ -145,8 +144,15 @@ var _ = Describe("Build From Source Matrix", Ordered, Label("tier3"), func() {
 	})
 
 	Context("builder matrix", func() {
-		// Builds were already triggered in BeforeAll; each spec only waits on
-		// its own WorkflowRun and asserts the post-build chain.
+		// Builds are triggered once for this matrix context; each spec only
+		// waits on its own WorkflowRun and asserts the post-build chain.
+		BeforeAll(func() {
+			By("triggering all matrix builds up front so they run concurrently")
+			for _, spec := range matrixSpecs {
+				triggerDeployableBuildSpec(spec)
+			}
+		})
+
 		It("dockerfile-builder: builds, deploys, and is reachable (service)", func() {
 			assertDeployableBuildSpec(specDockerfileService)
 		})
@@ -199,6 +205,41 @@ var _ = Describe("Build From Source Matrix", Ordered, Label("tier3"), func() {
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		It("private-repo: clones a private GitHub repo with a PAT, builds, and the WorkflowRun succeeds", func() {
+			pat := os.Getenv(privateRepoPATEnv)
+			if pat == "" {
+				Skip(fmt.Sprintf("%s not set; skipping private repository build scenario", privateRepoPATEnv))
+			}
+
+			By("creating the git basic-auth secret via the OpenChoreo Secret API")
+			Expect(createGitBasicAuthSecret(cpNs, privateRepoSecretRef, privateRepoGitUser, pat)).To(Succeed(),
+				"failed to create git secret via the OpenChoreo API")
+
+			By("applying the Component bound to the dockerfile-builder workflow")
+			output, err := framework.KubectlApplyLiteral(kubeContext,
+				privateRepoComponentYAML(componentPrivate, privateRepoSecretRef))
+			Expect(err).NotTo(HaveOccurred(), "failed to apply component: %s", output)
+
+			runName := componentPrivate + "-run-01"
+			By(fmt.Sprintf("applying WorkflowRun %s to trigger the private build", runName))
+			output, err = framework.KubectlApplyLiteral(kubeContext,
+				privateRepoWorkflowRunYAML(componentPrivate, runName, privateRepoSecretRef))
+			Expect(err).NotTo(HaveOccurred(), "failed to apply workflow run: %s", output)
+
+			By("build pod exposes streamable logs")
+			assertWorkflowRunLogs(runName)
+
+			By("verifying the checkout-source task succeeded (private repo cloned with the PAT)")
+			Eventually(func(g Gomega) {
+				framework.AssertWorkflowTaskSucceeded(g, kubeContext, cpNs, runName, "checkout-source")
+			}, buildTimeout, 10*time.Second).Should(Succeed())
+
+			By("waiting for the private-repo WorkflowRun to succeed")
+			Eventually(func(g Gomega) {
+				framework.AssertWorkflowRunSucceeded(g, kubeContext, cpNs, runName)
+			}, buildTimeout, 10*time.Second).Should(Succeed())
+		})
+
 		It("externalrefs-in-cel: SecretReference spec surfaces in the rendered Argo Workflow", func() {
 			By("applying SecretReference + Workflow + WorkflowRun")
 			output, err := framework.KubectlApplyLiteral(kubeContext, externalRefsFixtureYAML())
@@ -227,6 +268,69 @@ var _ = Describe("Build From Source Matrix", Ordered, Label("tier3"), func() {
 				g.Expect(out).To(Equal("7m42s"),
 					"expected label to equal SecretReference.spec.refreshInterval, got %q", out)
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		It("build-logs-api: OpenChoreo API serves live workflow-plane logs and reflects workflow deletion", func() {
+			// Reuse the dockerfile-service matrix build. The Describe is Ordered, so
+			// the builder-matrix Context has already built and asserted this run by
+			// the time the solo specs run; its Argo Workflow lingers (ttlAfterCompletion
+			// 1d) and no later spec reads it, so deleting it here to drive the
+			// live-logs lifecycle is safe.
+			runName := componentDockerfile + "-run-01"
+
+			By("obtaining an OpenChoreo API access token")
+			token, err := fetchToken()
+			Expect(err).NotTo(HaveOccurred(), "failed to fetch API token")
+			client, err := newAPIClient(token)
+			Expect(err).NotTo(HaveOccurred(), "failed to build API client")
+			ctx := context.Background()
+
+			By("status reports hasLiveObservability=true while the Argo Workflow exists")
+			Eventually(func(g Gomega) {
+				resp, err := client.GetWorkflowRunStatusWithResponse(ctx, cpNs, runName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp.StatusCode()).To(Equal(http.StatusOK), "body: %s", string(resp.Body))
+				g.Expect(resp.JSON200).NotTo(BeNil())
+				g.Expect(resp.JSON200.HasLiveObservability).To(BeTrue(),
+					"expected live observability while the workflow is present")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("logs endpoint serves live build logs from the workflow plane")
+			Eventually(func(g Gomega) {
+				resp, err := client.GetWorkflowRunLogsWithResponse(ctx, cpNs, runName, &gen.GetWorkflowRunLogsParams{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp.StatusCode()).To(Equal(http.StatusOK), "body: %s", string(resp.Body))
+				g.Expect(resp.JSON200).NotTo(BeNil())
+				g.Expect(*resp.JSON200).NotTo(BeEmpty(), "expected non-empty live build logs")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("deleting the Argo Workflow from the workflow plane")
+			_, err = framework.Kubectl(wpCtx(), "delete", "workflow.argoproj.io", runName,
+				"-n", "workflows-"+cpNs, "--ignore-not-found")
+			Expect(err).NotTo(HaveOccurred(), "failed to delete Argo Workflow")
+
+			By("status reports hasLiveObservability=false once the workflow is gone")
+			Eventually(func(g Gomega) {
+				resp, err := client.GetWorkflowRunStatusWithResponse(ctx, cpNs, runName)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp.StatusCode()).To(Equal(http.StatusOK), "body: %s", string(resp.Body))
+				g.Expect(resp.JSON200).NotTo(BeNil())
+				g.Expect(resp.JSON200.HasLiveObservability).To(BeFalse(),
+					"expected no live observability after the workflow is deleted")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("logs endpoint no longer serves live logs (this endpoint has no archived fallback)")
+			// With the Argo Workflow gone the WorkflowRun CR still resolves, so the
+			// service reaches the workflow plane and surfaces the missing workflow as
+			// an error (currently HTTP 500) with no log body — clients fall back to the
+			// observability plane via hasLiveObservability, not this endpoint.
+			Eventually(func(g Gomega) {
+				resp, err := client.GetWorkflowRunLogsWithResponse(ctx, cpNs, runName, &gen.GetWorkflowRunLogsParams{})
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(resp.StatusCode()).To(BeNumerically(">=", http.StatusBadRequest),
+					"expected an error status once the workflow is gone; body: %s", string(resp.Body))
+				g.Expect(resp.JSON200).To(BeNil(), "expected no live logs after the workflow is deleted")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
 		It("build-logs-via-k8s: live logs reachable from a running WorkflowRun pod", func() {

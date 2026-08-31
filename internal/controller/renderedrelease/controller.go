@@ -33,7 +33,9 @@ const (
 	targetPlaneDataPlane          = "dataplane"
 	targetPlaneObservabilityPlane = "observabilityplane"
 
-	appsAPIGroup = "apps"
+	appsAPIGroup    = "apps"
+	deploymentKind  = "Deployment"
+	statefulSetKind = "StatefulSet"
 
 	// ConditionResourcesApplied indicates whether resources were successfully applied to the target plane.
 	// When False, it contains the error message from the failed apply operation.
@@ -128,11 +130,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	// Ensure namespaces exist before applying resources
-	desiredNamespaces := r.makeDesiredNamespaces(release, desiredResources)
-	if err := r.ensureNamespaces(ctx, planeClient, desiredNamespaces); err != nil {
-		logger.Error(err, "Failed to ensure namespaces")
-		return ctrl.Result{}, err
+	// Ensure namespaces exist before applying resources on the observability plane only.
+	// The data plane's cell namespace is owned by the ProjectReleaseBinding, so the DP
+	// apply path must not regain implicit namespace creation. On the observability plane
+	// nothing else creates the target namespace, so we create it here.
+	if targetPlane == targetPlaneObservabilityPlane {
+		desiredNamespaces := r.makeDesiredNamespaces(release, desiredResources)
+		if err := r.ensureNamespaces(ctx, planeClient, desiredNamespaces); err != nil {
+			logger.Error(err, "Failed to ensure namespaces on observability plane")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// PHASE 1: Apply desired resources to the target plane
@@ -192,6 +199,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.hasTransitioningResources(release.Status.Resources) {
 		requeueAfter := getProgressingRequeueInterval(release)
 		logger.Info("Resources are transitioning, requeuing with configured interval",
+			"requeueAfter", requeueAfter)
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
+	// Poll workloads scaled to zero faster so an autoscaler-driven scale-up is noticed promptly.
+	if hasResurrectableWorkload(desiredResources, liveResources) {
+		requeueAfter := getResurrectableRequeueInterval()
+		logger.Info("Workload is scaled to zero, requeuing to detect autoscaler-driven scale-up",
 			"requeueAfter", requeueAfter)
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
@@ -307,7 +322,7 @@ func (r *Reconciler) makeDesiredResources(release *openchoreov1alpha1.RenderedRe
 // can surface it instead of silently dropping the restart trigger.
 func injectRestartedAt(obj *unstructured.Unstructured, value string) error {
 	gvk := obj.GroupVersionKind()
-	if gvk.Group != appsAPIGroup || gvk.Kind != "Deployment" {
+	if gvk.Group != appsAPIGroup || gvk.Kind != deploymentKind {
 		return nil
 	}
 	annotations, _, err := unstructured.NestedStringMap(obj.Object, "spec", "template", "metadata", "annotations")
@@ -386,10 +401,6 @@ func (r *Reconciler) ensureNamespaces(ctx context.Context, planeClient client.Cl
 			}
 			return fmt.Errorf("failed to create namespace %s: %w", namespace.Name, err)
 		}
-
-		// TODO: Emit a Kubernetes event when namespace is created
-		// Example: r.Recorder.Event(release, corev1.EventTypeNormal, "NamespaceCreated",
-		//          fmt.Sprintf("Created namespace %s in target plane", namespace.Name))
 	}
 
 	return nil
@@ -426,6 +437,12 @@ func (r *Reconciler) deleteResources(ctx context.Context, planeClient client.Cli
 	for _, obj := range staleResources {
 		resourceID := obj.GetLabels()[labels.LabelKeyRenderedReleaseResourceID]
 
+		// Skip resources already terminating on the target plane (re-deleting over
+		// the gateway tunnel is a wasted round-trip on the most expensive I/O path).
+		if obj.GetDeletionTimestamp() != nil {
+			continue
+		}
+
 		// Delete the resource from the target plane
 		if err := planeClient.Delete(ctx, obj); err != nil {
 			return fmt.Errorf("failed to delete stale resource %s: %w", resourceID, err)
@@ -448,8 +465,8 @@ var wellKnownDataPlaneGVKs = []schema.GroupVersionKind{
 	{Group: "", Version: "v1", Kind: "PersistentVolumeClaim"},
 
 	// Apps
-	{Group: "apps", Version: "v1", Kind: "Deployment"},
-	{Group: "apps", Version: "v1", Kind: "StatefulSet"},
+	{Group: appsAPIGroup, Version: "v1", Kind: deploymentKind},
+	{Group: appsAPIGroup, Version: "v1", Kind: statefulSetKind},
 
 	// Batch
 	{Group: "batch", Version: "v1", Kind: "Job"},
@@ -607,6 +624,15 @@ func getStableRequeueInterval(release *openchoreov1alpha1.RenderedRelease) time.
 	}
 
 	// Add 20% jitter
+	jitterMax := time.Duration(float64(baseInterval) * 0.2)
+	return addJitter(baseInterval, jitterMax)
+}
+
+// getResurrectableRequeueInterval returns the requeue interval for workloads scaled to zero
+// that an autoscaler may resurrect: faster than the stable cadence so a scale-up is noticed
+// promptly, but slow enough not to hammer the plane agent when many workloads sit idle.
+func getResurrectableRequeueInterval() time.Duration {
+	baseInterval := 1 * time.Minute
 	jitterMax := time.Duration(float64(baseInterval) * 0.2)
 	return addJitter(baseInterval, jitterMax)
 }

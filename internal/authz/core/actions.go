@@ -62,6 +62,17 @@ const (
 	ActionViewResourceRelease   = "resourcerelease:view"
 	ActionDeleteResourceRelease = "resourcerelease:delete"
 
+	// ProjectRelease actions
+	ActionCreateProjectRelease = "projectrelease:create"
+	ActionViewProjectRelease   = "projectrelease:view"
+	ActionDeleteProjectRelease = "projectrelease:delete"
+
+	// ProjectReleaseBinding actions
+	ActionCreateProjectReleaseBinding = "projectreleasebinding:create"
+	ActionViewProjectReleaseBinding   = "projectreleasebinding:view"
+	ActionUpdateProjectReleaseBinding = "projectreleasebinding:update"
+	ActionDeleteProjectReleaseBinding = "projectreleasebinding:delete"
+
 	// ReleaseBinding actions
 	ActionCreateReleaseBinding = "releasebinding:create"
 	ActionViewReleaseBinding   = "releasebinding:view"
@@ -85,6 +96,12 @@ const (
 	ActionViewResourceType   = "resourcetype:view"
 	ActionUpdateResourceType = "resourcetype:update"
 	ActionDeleteResourceType = "resourcetype:delete"
+
+	// ProjectType actions
+	ActionCreateProjectType = "projecttype:create"
+	ActionViewProjectType   = "projecttype:view"
+	ActionUpdateProjectType = "projecttype:update"
+	ActionDeleteProjectType = "projecttype:delete"
 
 	// Workflow actions
 	ActionCreateWorkflow = "workflow:create"
@@ -139,6 +156,12 @@ const (
 	ActionViewClusterResourceType   = "clusterresourcetype:view"
 	ActionUpdateClusterResourceType = "clusterresourcetype:update"
 	ActionDeleteClusterResourceType = "clusterresourcetype:delete"
+
+	// ClusterProjectType actions
+	ActionCreateClusterProjectType = "clusterprojecttype:create"
+	ActionViewClusterProjectType   = "clusterprojecttype:view"
+	ActionUpdateClusterProjectType = "clusterprojecttype:update"
+	ActionDeleteClusterProjectType = "clusterprojecttype:delete"
 
 	// ClusterTrait actions
 	ActionCreateClusterTrait = "clustertrait:create"
@@ -253,6 +276,9 @@ const (
 	// FinOps Report actions
 	ActionViewFinOpsReport   = "finopsreport:view"
 	ActionUpdateFinOpsReport = "finopsreport:update"
+
+	// FinOps cost insights actions
+	ActionViewFinOps = "finops:view"
 )
 
 // Action represents a system action with metadata
@@ -303,6 +329,17 @@ var systemActions = []Action{
 	{Name: ActionCreateResourceRelease, LowestScope: ScopeResource, IsInternal: false},
 	{Name: ActionDeleteResourceRelease, LowestScope: ScopeResource, IsInternal: false},
 
+	// ProjectRelease
+	{Name: ActionViewProjectRelease, LowestScope: ScopeProject, IsInternal: false},
+	{Name: ActionCreateProjectRelease, LowestScope: ScopeProject, IsInternal: false},
+	{Name: ActionDeleteProjectRelease, LowestScope: ScopeProject, IsInternal: false},
+
+	// ProjectReleaseBinding
+	{Name: ActionViewProjectReleaseBinding, LowestScope: ScopeProject, IsInternal: false},
+	{Name: ActionCreateProjectReleaseBinding, LowestScope: ScopeProject, IsInternal: false},
+	{Name: ActionUpdateProjectReleaseBinding, LowestScope: ScopeProject, IsInternal: false},
+	{Name: ActionDeleteProjectReleaseBinding, LowestScope: ScopeProject, IsInternal: false},
+
 	// ReleaseBinding
 	{Name: ActionViewReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
 	{Name: ActionCreateReleaseBinding, LowestScope: ScopeComponent, IsInternal: false},
@@ -326,6 +363,12 @@ var systemActions = []Action{
 	{Name: ActionCreateResourceType, LowestScope: ScopeNamespace, IsInternal: false},
 	{Name: ActionUpdateResourceType, LowestScope: ScopeNamespace, IsInternal: false},
 	{Name: ActionDeleteResourceType, LowestScope: ScopeNamespace, IsInternal: false},
+
+	// ProjectType
+	{Name: ActionViewProjectType, LowestScope: ScopeNamespace, IsInternal: false},
+	{Name: ActionCreateProjectType, LowestScope: ScopeNamespace, IsInternal: false},
+	{Name: ActionUpdateProjectType, LowestScope: ScopeNamespace, IsInternal: false},
+	{Name: ActionDeleteProjectType, LowestScope: ScopeNamespace, IsInternal: false},
 
 	// Workflow
 	{Name: ActionViewWorkflow, LowestScope: ScopeNamespace, IsInternal: false},
@@ -380,6 +423,12 @@ var systemActions = []Action{
 	{Name: ActionCreateClusterResourceType, LowestScope: ScopeCluster, IsInternal: false},
 	{Name: ActionUpdateClusterResourceType, LowestScope: ScopeCluster, IsInternal: false},
 	{Name: ActionDeleteClusterResourceType, LowestScope: ScopeCluster, IsInternal: false},
+
+	// ClusterProjectType
+	{Name: ActionViewClusterProjectType, LowestScope: ScopeCluster, IsInternal: false},
+	{Name: ActionCreateClusterProjectType, LowestScope: ScopeCluster, IsInternal: false},
+	{Name: ActionUpdateClusterProjectType, LowestScope: ScopeCluster, IsInternal: false},
+	{Name: ActionDeleteClusterProjectType, LowestScope: ScopeCluster, IsInternal: false},
 
 	// ClusterTrait
 	{Name: ActionViewClusterTrait, LowestScope: ScopeCluster, IsInternal: false},
@@ -494,6 +543,9 @@ var systemActions = []Action{
 	// FinOps Report
 	{Name: ActionViewFinOpsReport, LowestScope: ScopeProject, IsInternal: false},
 	{Name: ActionUpdateFinOpsReport, LowestScope: ScopeProject, IsInternal: false},
+
+	// FinOps cost insights
+	{Name: ActionViewFinOps, LowestScope: ScopeComponent, IsInternal: false},
 }
 
 // AllActions returns all system-defined actions

@@ -433,11 +433,19 @@ type ResourceEventsResponse struct {
 type PodLogEntry struct {
 	Timestamp string `json:"timestamp"`
 	Log       string `json:"log"`
+	Container string `json:"container"`
 }
 
 // ResourcePodLogsResponse is the response for the resource pod logs endpoint
 type ResourcePodLogsResponse struct {
 	LogEntries []PodLogEntry `json:"logEntries"`
+}
+
+// CronJobTriggerResponse describes the Job created from a manual cronjob trigger.
+type CronJobTriggerResponse struct {
+	JobName     string `json:"jobName"`
+	Namespace   string `json:"namespace"`
+	CronJobName string `json:"cronJobName"`
 }
 
 // SecretReferenceResponse represents a SecretReference in API responses

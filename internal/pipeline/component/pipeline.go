@@ -13,15 +13,17 @@ package component
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 
 	"github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/labels"
-	"github.com/openchoreo/openchoreo/internal/pipeline/component/context"
+	pipelinecontext "github.com/openchoreo/openchoreo/internal/pipeline/component/context"
 	"github.com/openchoreo/openchoreo/internal/pipeline/component/renderer"
 	"github.com/openchoreo/openchoreo/internal/pipeline/component/trait"
 	"github.com/openchoreo/openchoreo/internal/template"
@@ -45,6 +47,26 @@ const (
 // Option is a function that configures a Pipeline.
 type Option func(*Pipeline)
 
+// WithCostLimit sets the maximum accumulated cost for a single CEL expression
+// evaluated by this pipeline's template engine. Zero selects the engine's
+// built-in safe default; it never means unlimited.
+func WithCostLimit(limit uint64) Option {
+	return func(p *Pipeline) {
+		p.celCostLimit = limit
+	}
+}
+
+// WithRenderTimeout bounds the wall-clock duration of each call into this pipeline. The
+// deadline is derived inside every entry point rather than by the caller, so it covers
+// exactly one rendering step and never spans the work around it - an API read before, a
+// status write after. Zero or negative means no deadline; the CEL cost limits remain the
+// primary bound.
+func WithRenderTimeout(timeout time.Duration) Option {
+	return func(p *Pipeline) {
+		p.renderTimeout = timeout
+	}
+}
+
 // NewPipeline creates a new component rendering pipeline.
 func NewPipeline(opts ...Option) *Pipeline {
 	p := &Pipeline{}
@@ -53,7 +75,8 @@ func NewPipeline(opts ...Option) *Pipeline {
 	}
 	if p.templateEngine == nil {
 		p.templateEngine = template.NewEngineWithOptions(
-			template.WithCELExtensions(context.CELExtensions()...),
+			template.WithCELExtensions(pipelinecontext.CELExtensions()...),
+			template.WithCostLimit(p.celCostLimit),
 		)
 	}
 	return p
@@ -70,7 +93,12 @@ func NewPipeline(opts ...Option) *Pipeline {
 //   - Return output
 //
 // Returns an error if any step fails.
-func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
+func (p *Pipeline) Render(ctx context.Context, input *RenderInput) (*RenderOutput, error) {
+	ctx, cancel := template.WithRenderTimeout(ctx, p.renderTimeout)
+	defer cancel()
+
+	ctx = renderer.WithForEachBudget(ctx)
+
 	// Validate input
 	if err := p.validateInput(input); err != nil {
 		return nil, fmt.Errorf("invalid input: %w", err)
@@ -83,13 +111,13 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 	// Apply workload overrides from ReleaseBinding if present
 	workload := input.Workload
 	if input.Workload != nil && input.ReleaseBinding != nil && input.ReleaseBinding.Spec.WorkloadOverrides != nil {
-		workload = context.MergeWorkloadOverrides(input.Workload, input.ReleaseBinding.Spec.WorkloadOverrides)
+		workload = pipelinecontext.MergeWorkloadOverrides(input.Workload, input.ReleaseBinding.Spec.WorkloadOverrides)
 	}
 
 	// Pre-compute workload data and configurations once and share across all contexts
-	workloadData := context.ExtractWorkloadData(workload)
-	configurations := context.ExtractConfigurationsFromWorkload(input.SecretReferences, workload)
-	dependenciesData := context.ConnectionsData{
+	workloadData := pipelinecontext.ExtractWorkloadData(workload)
+	configurations := pipelinecontext.ExtractConfigurationsFromWorkload(input.SecretReferences, workload)
+	dependenciesData := pipelinecontext.ConnectionsData{
 		Items:     input.DependencyItems,
 		Resources: input.ResourceDependencyItems,
 	}
@@ -97,14 +125,14 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 	// Endpoint API schema parsing is opt-in: only extract resources when a template
 	// references the workload.toEndpointResources() macro. This keeps large schemas
 	// out of the render context (and skips parsing) for the common case.
-	var endpointResources context.EndpointResourceMap
+	var endpointResources pipelinecontext.EndpointResourceMap
 	if usesEndpointResources(input) {
-		endpointResources = context.ExtractEndpointResources(workload)
+		endpointResources = pipelinecontext.ExtractEndpointResources(workload)
 	}
 
 	// Build the trait context base once and reuse it for every trait built in this render.
 	// Both regular and embedded trait inputs embed TraitContextBase.
-	traitBase := context.TraitContextBase{
+	traitBase := pipelinecontext.TraitContextBase{
 		Metadata:                   input.Metadata,
 		DataPlane:                  input.DataPlane,
 		Environment:                input.Environment,
@@ -116,7 +144,7 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 	}
 
 	// Build component context
-	componentContext, err := context.BuildComponentContext(&context.ComponentContextInput{
+	componentContext, err := pipelinecontext.BuildComponentContext(&pipelinecontext.ComponentContextInput{
 		Component:                  input.Component,
 		ComponentType:              input.ComponentType,
 		ReleaseBinding:             input.ReleaseBinding,
@@ -137,20 +165,27 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 	// and embedded trait binding resolution.
 	componentContextMap := componentContext.ToMap()
 
-	// Evaluate ComponentType validation rules
+	// Evaluate ComponentType pre-render validation rules
 	if err := renderer.EvaluateValidationRules(
+		ctx,
 		p.templateEngine,
-		input.ComponentType.Spec.Validations,
+		input.ComponentType.Spec.EffectivePreRenderValidations(),
 		componentContextMap,
 	); err != nil {
 		return nil, fmt.Errorf("component type validation failed: %w", err)
 	}
+
+	// Accumulate post-render validations across the ComponentType and every trait;
+	// evaluated once after every trait's creates/patches/removes have been applied to
+	// the final resource set.
+	pendingPostRenders := componentTypePendingPostRenders(input, componentContextMap)
 
 	input.ApplyTargetPlaneDefaults()
 
 	// Render base resources from ComponentType
 	resourceRenderer := renderer.NewRenderer(p.templateEngine)
 	renderedResources, err := resourceRenderer.RenderResources(
+		ctx,
 		input.ComponentType.Spec.Resources,
 		componentContextMap,
 	)
@@ -174,7 +209,7 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 	}
 
 	// Create schema cache for trait reuse within this render
-	schemaCache := make(map[string]*context.SchemaBundle)
+	schemaCache := make(map[string]*pipelinecontext.SchemaBundle)
 
 	// Process embedded traits from ComponentType (before component-level traits)
 	for _, embeddedTrait := range input.ComponentType.Spec.Traits {
@@ -188,7 +223,8 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 		}
 
 		// Resolve CEL bindings against component context
-		resolvedParams, resolvedEnvironmentConfigs, err := context.ResolveEmbeddedTraitBindings(
+		resolvedParams, resolvedEnvironmentConfigs, err := pipelinecontext.ResolveEmbeddedTraitBindings(
+			ctx,
 			p.templateEngine,
 			embeddedTrait,
 			componentContextMap,
@@ -199,7 +235,7 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 		}
 
 		// Build embedded trait context
-		traitContext, err := context.BuildTraitContext(&context.TraitContextInput{
+		traitContext, err := pipelinecontext.BuildTraitContext(&pipelinecontext.TraitContextInput{
 			TraitContextBase:           traitBase,
 			Trait:                      t,
 			InstanceName:               embeddedTrait.InstanceName,
@@ -213,16 +249,24 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 		}
 
 		traitContextMap := traitContext.ToMap()
-		if err := renderer.EvaluateValidationRules(p.templateEngine, t.Spec.Validations, traitContextMap); err != nil {
+		if err := renderer.EvaluateValidationRules(ctx, p.templateEngine, t.Spec.EffectivePreRenderValidations(), traitContextMap); err != nil {
 			return nil, fmt.Errorf("trait %s/%s validation failed: %w",
 				embeddedTrait.Name, embeddedTrait.InstanceName, err)
 		}
 
 		beforeCount := len(renderedResources)
-		renderedResources, err = traitProcessor.ProcessTraits(renderedResources, t, traitContextMap)
+		renderedResources, err = traitProcessor.ProcessTraits(ctx, renderedResources, t, traitContextMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process embedded trait %s/%s: %w",
 				embeddedTrait.Name, embeddedTrait.InstanceName, err)
+		}
+
+		if len(t.Spec.PostRenderValidations) > 0 {
+			pendingPostRenders = append(pendingPostRenders, pendingPostRender{
+				label:       fmt.Sprintf("%s %s/%s", embeddedKind, embeddedTrait.Name, embeddedTrait.InstanceName),
+				context:     traitContextMap,
+				validations: t.Spec.PostRenderValidations,
+			})
 		}
 
 		metadata.TraitCount++
@@ -241,14 +285,14 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 		}
 
 		// Resolve the component-level trait's instance bindings (just JSON deserialization)
-		resolvedParams, resolvedEnvironmentConfigs, err := context.ExtractTraitInstanceBindings(traitInstance, input.ReleaseBinding)
+		resolvedParams, resolvedEnvironmentConfigs, err := pipelinecontext.ExtractTraitInstanceBindings(traitInstance, input.ReleaseBinding)
 		if err != nil {
 			return nil, fmt.Errorf("failed to extract trait bindings for %s/%s: %w",
 				traitInstance.Name, traitInstance.InstanceName, err)
 		}
 
 		// Build trait context (BuildTraitContext will handle schema caching)
-		traitContext, err := context.BuildTraitContext(&context.TraitContextInput{
+		traitContext, err := pipelinecontext.BuildTraitContext(&pipelinecontext.TraitContextInput{
 			TraitContextBase:           traitBase,
 			Trait:                      t,
 			InstanceName:               traitInstance.InstanceName,
@@ -262,20 +306,34 @@ func (p *Pipeline) Render(input *RenderInput) (*RenderOutput, error) {
 		}
 
 		traitContextMap := traitContext.ToMap()
-		if err := renderer.EvaluateValidationRules(p.templateEngine, t.Spec.Validations, traitContextMap); err != nil {
+		if err := renderer.EvaluateValidationRules(ctx, p.templateEngine, t.Spec.EffectivePreRenderValidations(), traitContextMap); err != nil {
 			return nil, fmt.Errorf("trait %s/%s validation failed: %w",
 				traitInstance.Name, traitInstance.InstanceName, err)
 		}
 
 		beforeCount := len(renderedResources)
-		renderedResources, err = traitProcessor.ProcessTraits(renderedResources, t, traitContextMap)
+		renderedResources, err = traitProcessor.ProcessTraits(ctx, renderedResources, t, traitContextMap)
 		if err != nil {
 			return nil, fmt.Errorf("failed to process trait %s/%s: %w",
 				traitInstance.Name, traitInstance.InstanceName, err)
 		}
 
+		if len(t.Spec.PostRenderValidations) > 0 {
+			pendingPostRenders = append(pendingPostRenders, pendingPostRender{
+				label:       fmt.Sprintf("%s %s/%s", instanceKind, traitInstance.Name, traitInstance.InstanceName),
+				context:     traitContextMap,
+				validations: t.Spec.PostRenderValidations,
+			})
+		}
+
 		metadata.TraitCount++
 		metadata.TraitResourceCount += len(renderedResources) - beforeCount
+	}
+
+	// Post-render validations run against the final resource set, after every trait's
+	// creates/patches/removes have been applied and before OpenChoreo post-processing.
+	if err := evaluatePostRenderValidations(ctx, p.templateEngine, renderedResources, pendingPostRenders); err != nil {
+		return nil, fmt.Errorf("post-render validation failed: %w", err)
 	}
 
 	if err := p.postProcessResources(renderedResources, input); err != nil {
@@ -310,6 +368,20 @@ func (p *Pipeline) validateInput(input *RenderInput) error {
 	return nil
 }
 
+// componentTypePendingPostRenders seeds the post-render accumulator with the
+// ComponentType's own post-render validations (bound to the component context), so
+// they are evaluated in the same stage as the traits', after every trait is applied.
+func componentTypePendingPostRenders(input *RenderInput, componentContextMap map[string]any) []pendingPostRender {
+	if len(input.ComponentType.Spec.PostRenderValidations) == 0 {
+		return nil
+	}
+	return []pendingPostRender{{
+		label:       fmt.Sprintf("ComponentType %s", input.ComponentType.Name),
+		context:     componentContextMap,
+		validations: input.ComponentType.Spec.PostRenderValidations,
+	}}
+}
+
 // endpointResourcesMacroToken is the literal that appears in a template's CEL
 // expressions when it opts into endpoint schema extraction via
 // workload.toEndpointResources().
@@ -320,12 +392,14 @@ const endpointResourcesMacroToken = "toEndpointResources"
 func usesEndpointResources(input *RenderInput) bool {
 	token := []byte(endpointResourcesMacroToken)
 	ct := input.ComponentType.Spec
-	if jsonContainsToken(token, ct.Resources, ct.Validations, ct.Traits) {
+	//nolint:staticcheck // deprecated field still read for backward-compat alias fallback
+	if jsonContainsToken(token, ct.Resources, ct.Validations, ct.PreRenderValidations, ct.PostRenderValidations, ct.Traits) {
 		return true
 	}
 	for i := range input.Traits {
 		t := input.Traits[i].Spec
-		if jsonContainsToken(token, t.Validations, t.Creates, t.Patches, t.Removes) {
+		//nolint:staticcheck // deprecated field still read for backward-compat alias fallback
+		if jsonContainsToken(token, t.Validations, t.PreRenderValidations, t.PostRenderValidations, t.Creates, t.Patches, t.Removes) {
 			return true
 		}
 	}

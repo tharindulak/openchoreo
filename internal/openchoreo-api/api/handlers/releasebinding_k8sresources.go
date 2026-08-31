@@ -4,8 +4,12 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"regexp"
 
 	openchoreov1alpha1 "github.com/openchoreo/openchoreo/api/v1alpha1"
 	"github.com/openchoreo/openchoreo/internal/openchoreo-api/api/gen"
@@ -103,16 +107,23 @@ func (h *Handler) GetReleaseBindingK8sResourceLogs(
 	ctx context.Context,
 	request gen.GetReleaseBindingK8sResourceLogsRequestObject,
 ) (gen.GetReleaseBindingK8sResourceLogsResponseObject, error) {
+	container := ""
+	if request.Params.Container != nil {
+		container = *request.Params.Container
+	}
+
 	h.logger.Debug("GetReleaseBindingK8sResourceLogs called",
 		"namespace", request.NamespaceName,
 		"releaseBinding", request.ReleaseBindingName,
-		"podName", request.Params.PodName)
+		"podName", request.Params.PodName,
+		"container", container)
 
 	resp, err := h.services.K8sResourcesService.GetResourceLogs(
 		ctx,
 		request.NamespaceName,
 		request.ReleaseBindingName,
 		request.Params.PodName,
+		container,
 		request.Params.SinceSeconds,
 	)
 	if err != nil {
@@ -126,6 +137,115 @@ func (h *Handler) GetReleaseBindingK8sResourceLogs(
 	}
 
 	return gen.GetReleaseBindingK8sResourceLogs200JSONResponse(result), nil
+}
+
+const maxTriggerPayloadSize = 64 << 10
+
+// triggerPathPattern matches the cronjob trigger subresource:
+// /api/v1alpha1/namespaces/{namespaceName}/releasebindings/{releaseBindingName}/trigger
+var triggerPathPattern = regexp.MustCompile(
+	`^/api/v1alpha1/namespaces/[^/]+/releasebindings/[^/]+/trigger$`)
+
+// OptionalTriggerBodyMiddleware lets the cronjob trigger endpoint be called with no request body.
+//
+// The endpoint declares an optional requestBody so callers can pass args, but oapi-codegen's strict
+// handler always decodes the body and rejects an empty one with "can't decode JSON body: EOF"
+// (the generated template has no branch for requestBody.required). Substituting an empty JSON
+// object keeps the original bodyless `POST .../trigger` working, which existing clients rely on.
+func OptionalTriggerBodyMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && triggerPathPattern.MatchString(r.URL.Path) && r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxTriggerPayloadSize)
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				var maxBytesErr *http.MaxBytesError
+				if errors.As(err, &maxBytesErr) {
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				} else {
+					http.Error(w, "failed to read request body", http.StatusBadRequest)
+				}
+				return
+			}
+			if len(bytes.TrimSpace(body)) == 0 {
+				body = []byte("{}")
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// TriggerReleaseBindingCronJob creates a Job from the deployed CronJob's jobTemplate for a
+// cronjob workload component, matching `kubectl create job --from=cronjob/<name>`.
+func (h *Handler) TriggerReleaseBindingCronJob(
+	ctx context.Context,
+	request gen.TriggerReleaseBindingCronJobRequestObject,
+) (gen.TriggerReleaseBindingCronJobResponseObject, error) {
+	h.logger.Debug("TriggerReleaseBindingCronJob called",
+		"namespace", request.NamespaceName,
+		"releaseBinding", request.ReleaseBindingName)
+
+	// An omitted args field or an explicit null leaves Args nil, which keeps the jobTemplate's
+	// args; a bodyless request reaches here as "{}" via OptionalTriggerBodyMiddleware. A present
+	// `"args": []` decodes to a non-nil empty slice and is a deliberate "run with no args", so it
+	// must stay distinguishable from nil.
+	var overrides *models.CronJobTriggerRequest
+	if request.Body != nil && request.Body.Args != nil {
+		overrides = &models.CronJobTriggerRequest{Args: *request.Body.Args}
+	}
+
+	resp, err := h.services.K8sResourcesService.TriggerCronJob(ctx, request.NamespaceName, request.ReleaseBindingName, overrides)
+	if err != nil {
+		return h.handleTriggerCronJobError(err)
+	}
+
+	result, err := convert[models.CronJobTriggerResponse, gen.CronJobTriggerResponse](*resp)
+	if err != nil {
+		h.logger.Error("Failed to convert cronjob trigger response", "error", err)
+		return gen.TriggerReleaseBindingCronJob500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
+	}
+
+	return gen.TriggerReleaseBindingCronJob200JSONResponse(result), nil
+}
+
+func (h *Handler) handleTriggerCronJobError(err error) (gen.TriggerReleaseBindingCronJobResponseObject, error) {
+	if errors.Is(err, services.ErrForbidden) {
+		return gen.TriggerReleaseBindingCronJob403JSONResponse{ForbiddenJSONResponse: forbidden()}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrNotCronJobWorkload) {
+		return gen.TriggerReleaseBindingCronJob400JSONResponse{
+			BadRequestJSONResponse: badRequest("release binding component is not a cronjob workload"),
+		}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrTriggerContainerAmbiguous) {
+		return gen.TriggerReleaseBindingCronJob400JSONResponse{
+			BadRequestJSONResponse: badRequest(
+				"cannot apply args: expected a container named \"main\" or a single-container pod"),
+		}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrTriggerConflict) {
+		return gen.TriggerReleaseBindingCronJob400JSONResponse{
+			BadRequestJSONResponse: badRequest("a job with the same name already exists, retry the trigger"),
+		}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrReleaseBindingNotFound) {
+		return gen.TriggerReleaseBindingCronJob404JSONResponse{NotFoundJSONResponse: notFound("ReleaseBinding")}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrComponentReleaseNotFound) {
+		return gen.TriggerReleaseBindingCronJob404JSONResponse{NotFoundJSONResponse: notFound("ComponentRelease")}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrRenderedReleaseNotFound) {
+		return gen.TriggerReleaseBindingCronJob404JSONResponse{NotFoundJSONResponse: notFound("RenderedRelease")}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrCronJobNotFound) {
+		return gen.TriggerReleaseBindingCronJob404JSONResponse{NotFoundJSONResponse: notFound("CronJob")}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrEnvironmentNotFound) {
+		return gen.TriggerReleaseBindingCronJob404JSONResponse{NotFoundJSONResponse: notFound("Environment")}, nil
+	}
+	h.logger.Error("Failed to trigger cronjob", "error", err)
+	return gen.TriggerReleaseBindingCronJob500JSONResponse{InternalErrorJSONResponse: internalError()}, nil
 }
 
 func (h *Handler) handleK8sResourceTreeError(err error) (gen.GetReleaseBindingK8sResourceTreeResponseObject, error) {
@@ -180,6 +300,11 @@ func (h *Handler) handleK8sResourceLogsError(err error) (gen.GetReleaseBindingK8
 	}
 	if errors.Is(err, k8sresourcessvc.ErrResourceNotFound) {
 		return gen.GetReleaseBindingK8sResourceLogs404JSONResponse{NotFoundJSONResponse: notFound("Resource")}, nil
+	}
+	if errors.Is(err, k8sresourcessvc.ErrInvalidContainer) {
+		return gen.GetReleaseBindingK8sResourceLogs400JSONResponse{
+			BadRequestJSONResponse: badRequest("Container not found in pod"),
+		}, nil
 	}
 	h.logger.Error("Failed to get k8s resource logs", "error", err)
 	return gen.GetReleaseBindingK8sResourceLogs500JSONResponse{InternalErrorJSONResponse: internalError()}, nil

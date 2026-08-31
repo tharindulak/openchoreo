@@ -31,6 +31,7 @@ type AgentConnection struct {
 	LastSeen        time.Time
 	ValidCRs        []string          // List of CRs (namespace/name) this connection is authorized for
 	clientCert      *x509.Certificate // Client certificate for re-validation on CR updates
+	intermediates   *x509.CertPool    // Handshake intermediate CAs, used to chain the client cert on re-validation
 	mu              sync.Mutex
 }
 
@@ -105,10 +106,15 @@ func (ac *AgentConnection) UpdateCRValidity(crKey string, certPool *x509.CertPoo
 
 	wasValid := slices.Contains(ac.ValidCRs, crKey)
 
-	// Verify connection's client cert against CA pool
+	// Verify against the CA pool, including the handshake intermediates so a cert
+	// issued by an intermediate can still chain to the CR's CA (mirrors connect-time
+	// verification; without it, CRs created after connect are never authorized).
 	opts := x509.VerifyOptions{
 		Roots:     certPool,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	if ac.intermediates != nil {
+		opts.Intermediates = ac.intermediates
 	}
 
 	_, verifyErr := ac.clientCert.Verify(opts)
@@ -128,6 +134,16 @@ func (ac *AgentConnection) UpdateCRValidity(crKey string, certPool *x509.CertPoo
 	return false, false, nil
 }
 
+// ConnectionListener observes connection lifecycle events. It is used to
+// mirror this pod's connections into the gateway mesh fabric registry.
+// Implementations must not call back into the ConnectionManager: callbacks may
+// be invoked while the manager's lock is held.
+type ConnectionListener interface {
+	OnAgentRegistered(planeIdentifier, connID string, validCRs []string)
+	OnAgentUnregistered(planeIdentifier, connID string)
+	OnAgentCRsChanged(planeIdentifier, connID string, validCRs []string)
+}
+
 // ConnectionManager manages active agent connections
 // Supports multiple concurrent connections per plane identifier for HA
 // One agent per physical plane (planeID) handles multiple CRs
@@ -138,7 +154,14 @@ type ConnectionManager struct {
 
 	mu         sync.RWMutex
 	roundRobin map[string]int // Track round-robin index per planeIdentifier
+	listener   ConnectionListener
 	logger     *slog.Logger
+}
+
+// SetListener registers a connection lifecycle listener. Must be called before
+// the server starts accepting connections.
+func (cm *ConnectionManager) SetListener(l ConnectionListener) {
+	cm.listener = l
 }
 
 // NewConnectionManager creates a new ConnectionManager
@@ -161,6 +184,7 @@ func (cm *ConnectionManager) Register(
 	conn Connection,
 	validCRs []string,
 	clientCert *x509.Certificate,
+	intermediates *x509.CertPool,
 ) (string, error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -179,6 +203,7 @@ func (cm *ConnectionManager) Register(
 		LastSeen:        now,
 		ValidCRs:        validCRs,
 		clientCert:      clientCert,
+		intermediates:   intermediates,
 	}
 
 	// Store by planeIdentifier (supports HA - multiple replicas)
@@ -197,6 +222,10 @@ func (cm *ConnectionManager) Register(
 		"connectionsForPlane", totalForPlane,
 		"totalConnections", totalConnections,
 	)
+
+	if cm.listener != nil {
+		cm.listener.OnAgentRegistered(planeIdentifier, connID, validCRs)
+	}
 
 	return connID, nil
 }
@@ -247,6 +276,10 @@ func (cm *ConnectionManager) Unregister(planeIdentifier, connID string) {
 				"remainingForPlane", len(cm.connections[planeIdentifier]),
 				"totalConnections", totalAll,
 			)
+
+			if cm.listener != nil {
+				cm.listener.OnAgentUnregistered(planeIdentifier, connID)
+			}
 			return
 		}
 	}
@@ -393,6 +426,9 @@ func (cm *ConnectionManager) DisconnectAllForPlane(planeType, planeID string) in
 			"planeID", planeID,
 			"connectionID", conn.ID,
 		)
+		if cm.listener != nil {
+			cm.listener.OnAgentUnregistered(planeIdentifier, conn.ID)
+		}
 	}
 
 	delete(cm.connections, planeIdentifier)
@@ -658,6 +694,10 @@ func (cm *ConnectionManager) RevalidateCR(
 			)
 		}
 		// else: status unchanged (still valid or still invalid)
+
+		if (granted || revoked) && cm.listener != nil {
+			cm.listener.OnAgentCRsChanged(planeIdentifier, conn.ID, conn.GetValidCRs())
+		}
 	}
 
 	cm.logger.Info("CR re-validation completed",

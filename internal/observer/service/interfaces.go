@@ -35,7 +35,14 @@ type MetricsQuerier interface {
 type TracesQuerier interface {
 	QueryTraces(ctx context.Context, req *types.TracesQueryRequest) (*types.TracesQueryResponse, error)
 	QuerySpans(ctx context.Context, traceID string, req *types.TracesQueryRequest) (*types.SpansQueryResponse, error)
-	GetSpanDetails(ctx context.Context, traceID string, spanID string) (*types.SpanInfo, error)
+	QuerySpanDetails(ctx context.Context, traceID string, spanID string, scope types.ComponentSearchScope) (*types.SpanInfo, error)
+}
+
+// FinOpsQuerier is the interface for querying cost insights and right-sizing
+// recommendations.
+type FinOpsQuerier interface {
+	GetComponentCosts(ctx context.Context, req *types.CostQueryRequest) (any, error)
+	GetRecommendations(ctx context.Context, req *types.RecommendationQueryRequest) (any, error)
 }
 
 // AlertsQuerier is the interface for querying alerts.

@@ -42,9 +42,23 @@ const (
 	componentBallerina       = "bal-svc"
 	componentNoWorkload      = "auto-wl"
 	componentExternalRefs    = "extref-svc"
+	componentPrivate         = "pvt-svc"
 	componentLogs            = "logs-svc"
 
 	releaseBindingSuffix = "-" + envDev
+
+	// Private-repository build scenario. The repo is private, so the build
+	// clones it with a GitHub PAT supplied out-of-band (privateRepoPATEnv);
+	// the spec self-skips when that env var is empty. The PAT is provisioned
+	// as a basic-auth secret through the OpenChoreo Secret API (which creates
+	// the SecretReference named privateRepoSecretRef and pushes the credentials
+	// into the workflow plane's secret store).
+	privateRepoPATEnv     = "E2E_GITHUB_PAT"
+	privateRepoURL        = "https://github.com/openchoreo/sample-workloads-private-repo"
+	privateRepoAppPath    = "/service-go-greeter"
+	privateRepoDockerfile = "/service-go-greeter/Dockerfile"
+	privateRepoSecretRef  = "pvt-git-pat-ref"
+	privateRepoGitUser    = "openchoreo"
 
 	testerLabel     = "app=build-tester"
 	testerContainer = "tester"
@@ -122,11 +136,30 @@ func platformResourcesYAML() string {
 		},
 		Spec: openchoreov1alpha1.ProjectSpec{
 			DeploymentPipelineRef: openchoreov1alpha1.DeploymentPipelineRef{Name: "default"},
+			Type:                  openchoreov1alpha1.ProjectTypeRef{Kind: openchoreov1alpha1.ProjectTypeRefKindClusterProjectType, Name: "default"},
+		},
+	}
+	// ProjectReleaseBinding deploys the project to the development environment,
+	// creating its cell (DP) namespace. spec.projectRelease is left unset; the
+	// Project controller seeds it once the first ProjectRelease is cut.
+	binding := &openchoreov1alpha1.ProjectReleaseBinding{
+		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "ProjectReleaseBinding"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      projectName + "-" + envDev,
+			Namespace: cpNs,
+			Labels: map[string]string{
+				"openchoreo.dev/project":     projectName,
+				"openchoreo.dev/environment": envDev,
+			},
+		},
+		Spec: openchoreov1alpha1.ProjectReleaseBindingSpec{
+			Owner:       openchoreov1alpha1.ProjectReleaseBindingOwner{ProjectName: projectName},
+			Environment: envDev,
 		},
 	}
 	docs := []any{pipeline}
 	docs = append(docs, envs...)
-	docs = append(docs, proj)
+	docs = append(docs, proj, binding)
 	return mustYAMLDocs(docs...)
 }
 
@@ -224,6 +257,89 @@ func workflowRunYAML(componentName, runName, workflowName, gitURL, appPath, dock
 			Workflow: openchoreov1alpha1.WorkflowRunConfig{
 				Kind:       openchoreov1alpha1.WorkflowRefKindClusterWorkflow,
 				Name:       workflowName,
+				Parameters: &runtime.RawExtension{Raw: raw},
+			},
+		},
+	}
+	return mustYAMLDocs(wfr)
+}
+
+// privateRepoBuildParams builds the dockerfile-builder parameter map for a
+// private repository: same shape as buildComponentYAML's params plus the
+// repository.secretRef that points the build at the SecretReference.
+func privateRepoBuildParams(secretRef string) map[string]any {
+	return map[string]any{
+		"repository": map[string]any{
+			"url":       privateRepoURL,
+			"appPath":   privateRepoAppPath,
+			"secretRef": secretRef,
+			"revision":  map[string]any{"branch": "main"},
+		},
+		"docker": map[string]any{
+			"context":  privateRepoAppPath,
+			"filePath": privateRepoDockerfile,
+		},
+	}
+}
+
+// privateRepoComponentYAML returns the Component for the private-repo build.
+// autoDeploy is false because the scenario only validates the build (logs +
+// success), not the downstream deployment chain.
+func privateRepoComponentYAML(name, secretRef string) string {
+	raw, err := json.Marshal(privateRepoBuildParams(secretRef))
+	if err != nil {
+		panic(err)
+	}
+	comp := &openchoreov1alpha1.Component{
+		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "Component"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: cpNs,
+			Labels: map[string]string{
+				"openchoreo.dev/name":      name,
+				"openchoreo.dev/project":   projectName,
+				"openchoreo.dev/component": name,
+			},
+		},
+		Spec: openchoreov1alpha1.ComponentSpec{
+			Owner: openchoreov1alpha1.ComponentOwner{ProjectName: projectName},
+			ComponentType: openchoreov1alpha1.ComponentTypeRef{
+				Kind: openchoreov1alpha1.ComponentTypeRefKindClusterComponentType,
+				Name: "deployment/service",
+			},
+			AutoDeploy: false,
+			Workflow: &openchoreov1alpha1.ComponentWorkflowConfig{
+				Kind:       openchoreov1alpha1.WorkflowRefKindClusterWorkflow,
+				Name:       "dockerfile-builder",
+				Parameters: &runtime.RawExtension{Raw: raw},
+			},
+		},
+	}
+	return mustYAMLDocs(comp)
+}
+
+// privateRepoWorkflowRunYAML returns the WorkflowRun that triggers the
+// private-repo build. The WorkflowRun parameters carry repository.secretRef,
+// which the rendered Argo Workflow resolves to render the git ExternalSecret.
+func privateRepoWorkflowRunYAML(componentName, runName, secretRef string) string {
+	raw, err := json.Marshal(privateRepoBuildParams(secretRef))
+	if err != nil {
+		panic(err)
+	}
+	wfr := &openchoreov1alpha1.WorkflowRun{
+		TypeMeta: metav1.TypeMeta{APIVersion: openChoreoAPIVer, Kind: "WorkflowRun"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      runName,
+			Namespace: cpNs,
+			Labels: map[string]string{
+				"openchoreo.dev/project":   projectName,
+				"openchoreo.dev/component": componentName,
+			},
+		},
+		Spec: openchoreov1alpha1.WorkflowRunSpec{
+			Workflow: openchoreov1alpha1.WorkflowRunConfig{
+				Kind:       openchoreov1alpha1.WorkflowRefKindClusterWorkflow,
+				Name:       "dockerfile-builder",
 				Parameters: &runtime.RawExtension{Raw: raw},
 			},
 		},

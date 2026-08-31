@@ -21,6 +21,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
+from common.auth.bearer import BearerTokenAuth
 from src.agent.handoff_logic import (
     build_shortcut_result,
     classify_handoff_shortcut,
@@ -47,8 +48,7 @@ from src.agent.tool_registry import (
     TOOL_ACTIVE_FORMS,
     TOOLS,
 )
-from src.auth.bearer import BearerTokenAuth
-from src.auth.oauth_client import get_oauth2_auth
+from src.auth import get_oauth2_auth
 from src.clients import MCPClient, get_model, get_report_backend, resolve_api_key
 from src.clients.aep_reports import publish_rca_report, should_publish_report
 from src.config import settings
@@ -57,7 +57,7 @@ from src.logging_config import request_id_context
 from src.models import ChatResponse, HandoffJudgment, RCAReport
 from src.models.rca_report import RootCauseIdentified
 from src.models.remediation_result import RemediationResult
-from src.template_manager import render
+from src.templates import render
 
 logger = logging.getLogger(__name__)
 

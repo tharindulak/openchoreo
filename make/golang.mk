@@ -166,8 +166,8 @@ vet: ## Run go vet against code.
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION := 1.36.0
 
-.PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
+.PHONY: go.test
+go.test: manifests generate fmt vet envtest ## Run Go tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(TOOL_BIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 .PHONY: go.mod.tidy
@@ -197,7 +197,9 @@ openapi-codegen: oapi-codegen ## Generate Go server and client code from OpenAPI
 	@$(call log, "Generating Observer OpenAPI client")
 	$(OAPI_CODEGEN) -config internal/observer/api/cfg-client.yaml openapi/observer-api.yaml
 	@$(call log, "Generating Observer Logs Adapter API client")
-	$(OAPI_CODEGEN) -config internal/observer/api/cfg-logs-adapter-client.yaml https://openchoreo.dev/api-specs/observability-logs-adapter-api.yaml
+	$(OAPI_CODEGEN) -config internal/observer/api/cfg-logs-adapter-client.yaml openapi/observability-logs-adapter-api.yaml
+	@$(call log, "Generating Observer FinOps Adapter API client")
+	$(OAPI_CODEGEN) -config internal/observer/api/cfg-finops-adapter-client.yaml openapi/finops-adapter-api.yaml
 
 .PHONY: mockery-gen
 mockery-gen: mockery ## Regenerate mockery mocks.

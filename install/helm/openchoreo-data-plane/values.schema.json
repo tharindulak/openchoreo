@@ -7,7 +7,7 @@
       "description": "Cluster Agent configuration for WebSocket connection to control plane cluster gateway",
       "properties": {
         "affinity": {
-          "additionalProperties": false,
+          "additionalProperties": true,
           "default": {},
           "description": "Affinity rules for pod scheduling",
           "required": [],
@@ -507,6 +507,16 @@
           },
           "title": "tolerations",
           "type": "array"
+        },
+        "topologySpreadConstraints": {
+          "default": [],
+          "description": "Topology spread constraints for pod distribution across failure domains",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "topologySpreadConstraints",
+          "type": "array"
         }
       },
       "required": [],
@@ -796,6 +806,35 @@
           "required": [],
           "title": "tls",
           "type": "object"
+        },
+        "tlsPassthrough": {
+          "additionalProperties": false,
+          "description": "TLS passthrough (SNI) configuration. Adds a Gateway listener (protocol TLS, mode Passthrough)\nthat routes encrypted traffic by SNI without terminating TLS; the workload terminates TLS itself.\nRequired by TLSRoute-based ComponentTypes such as the component-tls-service sample.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable the TLS passthrough listener. When false, no passthrough listener is created.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "hostname": {
+              "default": "*.openchoreoapis.invalid",
+              "description": "Hostname pattern for the TLS passthrough listener (SNI matching). When empty, the listener\nmatches all SNIs. Must encompass the TLSRoute hostnames (e.g. \"*.openchoreoapis.invalid\").\n",
+              "title": "hostname",
+              "type": "string"
+            },
+            "port": {
+              "default": 8443,
+              "description": "Port for the TLS passthrough listener. Must differ from httpsPort when the HTTPS (Terminate) listener is also enabled.",
+              "maximum": 65535,
+              "minimum": 1,
+              "title": "port",
+              "type": "integer"
+            }
+          },
+          "required": [],
+          "title": "tlsPassthrough",
+          "type": "object"
         }
       },
       "required": [],
@@ -815,6 +854,22 @@
           "required": [],
           "title": "commonLabels",
           "type": "object"
+        },
+        "imagePullSecrets": {
+          "default": [],
+          "description": "Image pull secrets applied to all first-party pods, for pulling images from authenticated private registries. Entries are LocalObjectReferences (name only).",
+          "items": {
+            "required": [],
+            "type": "object"
+          },
+          "title": "imagePullSecrets",
+          "type": "array"
+        },
+        "imageRegistry": {
+          "default": "",
+          "description": "Registry override for all first-party container images. When set, it replaces the registry host of each image repository. May include a path (e.g. registry.example.com/ghcr.io) for path-preserving mirrors. Empty uses each image's default registry.",
+          "title": "imageRegistry",
+          "type": "string"
         }
       },
       "required": [],

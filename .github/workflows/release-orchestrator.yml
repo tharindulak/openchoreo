@@ -69,7 +69,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
@@ -268,7 +268,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ needs.validate.outputs.checkout-sha }}
@@ -286,18 +286,11 @@ jobs:
           git checkout -b "${BRANCH}"
 
           # Update sample URLs to point to the release branch instead of main.
-          # Exclude all.yaml because it is auto-generated; make samples-gen
-          # will regenerate it with the correct branch URL below.
           find samples/ \( -name "*.md" -o -name "*.yaml" \) \
-            ! -path "samples/getting-started/all.yaml" \
             -exec sed -i \
               -e 's|/openchoreo/openchoreo/main/|/openchoreo/openchoreo/'"${BRANCH}"'/|g' \
               -e 's|/refs/heads/main/|/refs/heads/'"${BRANCH}"'/|g' \
               -e 's|/openchoreo/openchoreo/blob/main/|/openchoreo/openchoreo/blob/'"${BRANCH}"'/|g' {} +
-
-          # Regenerate all.yaml with the release branch URL. The Makefile
-          # detects the branch via git, which now points to ${BRANCH}.
-          make samples-gen
 
           git add -u
           if ! git diff --cached --quiet; then
@@ -311,22 +304,26 @@ jobs:
   # Resolve target: pin the exact commit to gate and tag, then wait for
   # build-and-test at that commit so the e2e gate can consume the
   # sha-tagged images and Helm charts its publish job pushes.
+  # Runs for branch too, so creating a release branch gates the new tip.
   # always() allows this to run even when branch is skipped (action=tag
   # or branch already exists). !failure() prevents running after errors.
   # ----------------------------------------------------------------
   resolve-target:
     needs: [validate, branch]
-    if: ${{ always() && !failure() && !cancelled() && (github.event.inputs.action == 'full' || github.event.inputs.action == 'tag') }}
+    if: ${{ always() && !failure() && !cancelled() && (github.event.inputs.action == 'full' || github.event.inputs.action == 'tag' || github.event.inputs.action == 'branch') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read
+      statuses: read
     outputs:
       target: ${{ steps.resolve-target.outputs.target }}
       helm-chart-version: ${{ steps.resolve-target.outputs.helm-chart-version }}
+      backstage-image-tag: ${{ steps.backstage-tag.outputs.backstage-image-tag }}
+      e2e-already-passed: ${{ steps.e2e-status.outputs.e2e-already-passed }}
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.checkout-sha }}
           fetch-depth: 0
@@ -360,11 +357,37 @@ jobs:
           echo "target=${TARGET}" >> $GITHUB_OUTPUT
           echo "helm-chart-version=0.0.0-${SHORT_SHA}" >> $GITHUB_OUTPUT
 
+      - name: Resolve backstage-plugins image tag
+        id: backstage-tag
+        env:
+          RELEASE_BRANCH: ${{ needs.validate.outputs.release-branch }}
+        run: |
+          # openchoreo-ui (Backstage) images are tagged with the backstage-plugins
+          # commit short SHA. Resolve the backstage-plugins branch that mirrors the
+          # openchoreo release branch; fall back to latest-dev when absent
+          # (e.g. prereleases, which cut no mirror branch).
+          BS_REPO="https://github.com/${{ github.repository_owner }}/backstage-plugins.git"
+          # Run git ls-remote without a pipe so its exit status isn't masked by
+          # awk's: a transient failure must error, not fall back to latest-dev.
+          if ! LS_OUTPUT=$(git ls-remote "$BS_REPO" "refs/heads/${RELEASE_BRANCH}"); then
+            echo "::error::git ls-remote failed for backstage-plugins branch ${RELEASE_BRANCH} (transient lookup failure); refusing to fall back to latest-dev."
+            exit 1
+          fi
+          TIP=$(printf '%s\n' "$LS_OUTPUT" | awk 'NR==1{print $1}')
+          if [ -n "$TIP" ]; then
+            TAG=$(printf '%s' "$TIP" | cut -c1-8)
+            echo "Backstage image tag: ${TAG} (backstage-plugins ${RELEASE_BRANCH} @ ${TIP})"
+          else
+            TAG="latest-dev"
+            echo "::warning::backstage-plugins branch ${RELEASE_BRANCH} not found; falling back to ${TAG}"
+          fi
+          echo "backstage-image-tag=${TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Wait for build-and-test workflow
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.resolve-target.outputs.target }}
         run: |
-          TARGET_SHA="${{ steps.resolve-target.outputs.target }}"
           SHORT_SHA=$(git rev-parse --short=8 "${TARGET_SHA}")
           echo "Waiting for build-and-test workflow for commit ${SHORT_SHA}..."
           for i in $(seq 1 30); do
@@ -399,27 +422,67 @@ jobs:
           echo "::error::build-and-test for ${SHORT_SHA} not completed after 30 minutes."
           exit 1
 
+      - name: Check for a prior passing e2e gate at target
+        id: e2e-status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ steps.resolve-target.outputs.target }}
+          HELM_CHART_VERSION: ${{ steps.resolve-target.outputs.helm-chart-version }}
+          BACKSTAGE_IMAGE_TAG: ${{ steps.backstage-tag.outputs.backstage-image-tag }}
+        run: |
+          # e2e-gate.yml stamps `e2e-gate` on its tested commit regardless of
+          # trigger, so this reuses any prior passing gate at this commit —
+          # only if it also tested the same Helm/Backstage versions (encoded
+          # in the description, since backstage_image_tag can drift between
+          # runs at the same commit).
+          EXPECTED_DESC="e2e gate passed (helm=${HELM_CHART_VERSION}, backstage=${BACKSTAGE_IMAGE_TAG:-none})"
+          if ! STATUS_JSON=$(gh api "repos/${{ github.repository }}/commits/${TARGET}/status" \
+            --jq '.statuses | map(select(.context == "e2e-gate"))[0] // {}'); then
+            echo "::warning::Failed to query commit status for ${TARGET}; assuming no prior e2e gate."
+            STATUS_JSON="{}"
+          fi
+          STATE=$(echo "$STATUS_JSON" | jq -r '.state // "none"')
+          DESCRIPTION=$(echo "$STATUS_JSON" | jq -r '.description // ""')
+          if [ "$STATE" = "success" ] && [ "$DESCRIPTION" = "$EXPECTED_DESC" ]; then
+            echo "e2e gate already passed at ${TARGET} for ${EXPECTED_DESC}; it will be reused."
+            echo "e2e-already-passed=true" >> $GITHUB_OUTPUT
+          elif [ "$STATE" = "success" ]; then
+            echo "e2e gate passed at ${TARGET} but for different artifacts ('${DESCRIPTION}' vs expected '${EXPECTED_DESC}'); the gate will run again."
+            echo "e2e-already-passed=false" >> $GITHUB_OUTPUT
+          else
+            echo "No passing e2e gate at ${TARGET} (state: ${STATE}); the gate will run."
+            echo "e2e-already-passed=false" >> $GITHUB_OUTPUT
+          fi
+
   # ----------------------------------------------------------------
   # E2E gate: All e2e suits plus the Playwright UI suite must pass
-  # at the exact commit being released before the tag is created. Legs run
-  # in parallel, one k3d cluster each. skip_e2e bypasses the gate for
-  # declared emergencies only.
+  # at the exact commit being released before the tag is created. Also
+  # runs on branch creation so the new release tip is gated up front.
+  # Legs run in parallel, one k3d cluster each. Skipped when the target
+  # commit already has a passing gate (see resolve-target), and skip_e2e
+  # bypasses the gate for declared emergencies only.
   # ----------------------------------------------------------------
   e2e:
     needs: [validate, resolve-target]
-    if: ${{ always() && !failure() && !cancelled() && (github.event.inputs.action == 'full' || github.event.inputs.action == 'tag') && !inputs.skip_e2e }}
+    if: ${{ always() && !failure() && !cancelled() && (github.event.inputs.action == 'full' || github.event.inputs.action == 'tag' || github.event.inputs.action == 'branch') && !inputs.skip_e2e && needs.resolve-target.outputs.e2e-already-passed != 'true' }}
     permissions:
       contents: read
+      statuses: write
     uses: ./.github/workflows/e2e-gate.yml
     with:
       ref: ${{ needs.resolve-target.outputs.target }}
       helm_chart_version: ${{ needs.resolve-target.outputs.helm-chart-version }}
+      backstage_image_tag: ${{ needs.resolve-target.outputs.backstage-image-tag }}
+    secrets:
+      E2E_GITHUB_PAT: ${{ secrets.E2E_GITHUB_PAT }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   # ----------------------------------------------------------------
   # Tag: create and push the annotated release tag at the gated commit.
   # always() allows this to run even when branch is skipped (action=tag
-  # or branch already exists) or e2e is skipped (skip_e2e). !failure()
-  # prevents tagging after errors, including any failed e2e leg.
+  # or branch already exists) or e2e is skipped (skip_e2e, or a gate
+  # reused from branch creation at the same commit). !failure() prevents
+  # tagging after errors, including any failed e2e leg.
   # ----------------------------------------------------------------
   tag:
     needs: [validate, branch, resolve-target, e2e]
@@ -438,7 +501,7 @@ jobs:
           repositories: ${{ github.repository }}
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           token: ${{ steps.app-token.outputs.token }}
           ref: ${{ needs.validate.outputs.checkout-sha }}

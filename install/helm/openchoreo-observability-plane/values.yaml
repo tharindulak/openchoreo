@@ -27,6 +27,22 @@ global:
   commonLabels: {}
 
   # @schema
+  # type: string
+  # description: Registry override for all first-party container images. When set, it replaces the registry host of each image repository. May include a path (e.g. registry.example.com/ghcr.io) for path-preserving mirrors. Empty uses each image's default registry.
+  # default: ""
+  # @schema
+  imageRegistry: ""
+
+  # @schema
+  # type: array
+  # description: Image pull secrets applied to all first-party pods, for pulling images from authenticated private registries. Entries are LocalObjectReferences (name only).
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  imagePullSecrets: []
+
+  # @schema
   # description: Installation mode of OpenChoreo
   # enum: [singleCluster, multiCluster, quickStart]
   # default: singleCluster
@@ -210,6 +226,7 @@ controllerManager:
 
   # @schema
   # type: object
+  # additionalProperties: true
   # description: Affinity rules for pod scheduling
   # default: {}
   # @schema
@@ -327,41 +344,6 @@ controllerManager:
       # @schema
       enableWebhooks: "false"
 
-  # @schema
-  # type: object
-  # description: Cluster gateway configuration for multi-cluster communication
-  # @schema
-  clusterGateway:
-    # @schema
-    # type: boolean
-    # description: Enable cluster gateway integration for multi-cluster setups
-    # default: false
-    # @schema
-    enabled: false
-    # @schema
-    # type: string
-    # description: URL of the cluster gateway service in the control plane
-    # default: https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443
-    # @schema
-    url: https://cluster-gateway.openchoreo-control-plane.svc.cluster.local:8443
-    # @schema
-    # type: object
-    # description: TLS configuration for cluster gateway communication
-    # @schema
-    tls:
-      # @schema
-      # type: string
-      # description: Path to the CA certificate file for gateway verification
-      # default: /etc/cluster-gateway/ca.crt
-      # @schema
-      caPath: /etc/cluster-gateway/ca.crt
-      # @schema
-      # type: string
-      # description: Name of the ConfigMap containing the gateway CA certificate
-      # default: cluster-gateway-ca
-      # @schema
-      caConfigMap: cluster-gateway-ca
-
 ## Values for dependent charts
 
 
@@ -374,9 +356,9 @@ observer:
   # @schema
   # type: string
   # description: Control plane API base URL used by observer
-  # default: "http://api.openchoreo.localhost:8080"
+  # default: "http://api.openchoreo.invalid:8080"
   # @schema
-  controlPlaneApiUrl: "http://api.openchoreo.localhost:8080"
+  controlPlaneApiUrl: "http://api.openchoreo.invalid:8080"
 
   # @schema
   # type: boolean
@@ -507,6 +489,24 @@ observer:
     timeout: "30s"
 
   # @schema
+  # type: object
+  # description: Configurations for FinOps adapter connectivity
+  # @schema
+  finOpsAdapter:
+    # @schema
+    # type: string
+    # description: URL of the FinOps adapter service
+    # default: "http://finops-adapter:9101"
+    # @schema
+    url: "http://finops-adapter:9101"
+    # @schema
+    # type: string
+    # description: Timeout for FinOps adapter requests
+    # default: "30s"
+    # @schema
+    timeout: "30s"
+
+  # @schema
   # type: string
   # description: OAuth2 client ID used by the Observer when calling the control plane API
   # default: openchoreo-observer-resource-reader-client
@@ -535,8 +535,7 @@ observer:
     # items:
     #   type: string
     # @schema
-    allowedOrigins:
-    - "http://openchoreo.localhost:8080"
+    allowedOrigins: []
 
   # @schema
   # type: array
@@ -553,7 +552,7 @@ observer:
   # @schema
   extraEnvs:
   - name: OBSERVER_BASE_URL
-    value: "http://observer.openchoreo.localhost:11080"
+    value: "http://observer.openchoreo.invalid:11080"
   - name: AUTHZ_TIMEOUT
     value: "30s"
 
@@ -680,6 +679,41 @@ observer:
     #   type: string
     # @schema
     hostnames: []
+
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
 
 
 ## Values for local templates
@@ -1066,10 +1100,20 @@ clusterAgent:
 
   # @schema
   # type: object
+  # additionalProperties: true
   # description: Affinity rules for pod scheduling
   # default: {}
   # @schema
   affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
 
 
 # @schema
@@ -1083,6 +1127,13 @@ gateway:
   # default: true
   # @schema
   enabled: true
+
+  # @schema
+  # type: string
+  # description: GatewayClass name to reference in the Gateway CR
+  # default: "kgateway"
+  # @schema
+  gatewayClassName: "kgateway"
 
   # @schema
   # type: object
@@ -1230,6 +1281,11 @@ security:
     # default: ""
     # @schema
     authServerBaseUrl: ""
+    # @schema
+    # type: array
+    # description: OAuth scopes advertised by the observer's MCP endpoint via the protected-resource metadata (RFC 9728) and WWW-Authenticate 401 challenge. Leave empty to use the default (openid profile email).
+    # @schema
+    mcpOAuthScopes: []
   # @schema
   # type: object
   # description: JWT configuration
@@ -1315,8 +1371,7 @@ rca:
     # items:
     #   type: string
     # @schema
-    allowedOrigins:
-    - "http://openchoreo.localhost:8080"
+    allowedOrigins: []
 
   # @schema
   # type: object
@@ -1412,9 +1467,9 @@ rca:
   # @schema
   # type: string
   # description: OpenChoreo API base URL used by rca-agent
-  # default: "http://api.openchoreo.localhost:8080"
+  # default: "http://api.openchoreo.invalid:8080"
   # @schema
-  openchoreoApiUrl: "http://api.openchoreo.localhost:8080"
+  openchoreoApiUrl: "http://api.openchoreo.invalid:8080"
 
   # @schema
   # type: string
@@ -1434,6 +1489,13 @@ rca:
     # default: ""
     # @schema
     modelName: "anthropic:claude-sonnet-4-6"
+
+    # @schema
+    # type: string
+    # description: Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and RCA_LLM_API_KEY may be a placeholder.
+    # default: ""
+    # @schema
+    baseUrl: ""
 
 
   # @schema
@@ -1514,6 +1576,41 @@ rca:
   # @schema
   extraEnvs: []
 
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []
+
 # FinOps Agent Configuration
 finOpsAgent:
   # @schema
@@ -1556,8 +1653,7 @@ finOpsAgent:
     # items:
     #   type: string
     # @schema
-    allowedOrigins:
-    - "http://openchoreo.localhost:8080"
+    allowedOrigins: []
 
   # @schema
   # type: object
@@ -1672,6 +1768,13 @@ finOpsAgent:
   llmName: ""
 
   # @schema
+  # type: string
+  # description: Optional OpenAI-compatible base URL for LLM calls. Set this to route through the ai-gateway-agentgateway module (e.g., http://agentgateway-proxy.openchoreo-data-plane) instead of calling the provider directly. When set, the provider API key is managed at the gateway and LLM_API_KEY may be a placeholder.
+  # default: ""
+  # @schema
+  llmBaseUrl: ""
+
+  # @schema
   # description: Report storage backend type
   # enum: [sqlite, postgresql]
   # default: sqlite
@@ -1729,9 +1832,9 @@ finOpsAgent:
   # @schema
   # type: string
   # description: OpenChoreo API URL for authorization service
-  # default: "http://api.openchoreo.localhost:8080"
+  # default: "http://api.openchoreo.invalid:8080"
   # @schema
-  openchoreoApiUrl: "http://api.openchoreo.localhost:8080"
+  openchoreoApiUrl: "http://api.openchoreo.invalid:8080"
 
   # @schema
   # type: object
@@ -1778,3 +1881,38 @@ finOpsAgent:
   #       description: Environment variable value
   # @schema
   extraEnvs: []
+
+  # @schema
+  # type: object
+  # description: Node selector for pod scheduling
+  # additionalProperties:
+  #   type: string
+  # default: {}
+  # @schema
+  nodeSelector: {}
+
+  # @schema
+  # type: array
+  # description: Tolerations for pod scheduling
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  tolerations: []
+
+  # @schema
+  # type: object
+  # additionalProperties: true
+  # description: Affinity rules for pod scheduling
+  # default: {}
+  # @schema
+  affinity: {}
+
+  # @schema
+  # type: array
+  # description: Topology spread constraints for pod distribution across failure domains
+  # items:
+  #   type: object
+  # default: []
+  # @schema
+  topologySpreadConstraints: []

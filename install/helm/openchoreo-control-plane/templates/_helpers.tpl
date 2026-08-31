@@ -177,8 +177,8 @@ fail-fast (at `helm template`/`helm install` time) on an invalid value.
 */}}
 {{- define "openchoreo-control-plane.clusterGateway.validateReplicas" -}}
 {{- $replicas := int .Values.clusterGateway.replicas -}}
-{{- if ne $replicas 1 -}}
-{{- fail (printf "\n\nINVALID VALUE: clusterGateway.replicas=%d\n\nThe cluster gateway must run as a singleton (clusterGateway.replicas=1).\nIt holds cluster-agent WebSocket connections in process memory, so multiple\nreplicas would split that connection state across pods and break agent\nconnectivity. Set clusterGateway.replicas=1 (the default).\n" $replicas) -}}
+{{- if and (ne $replicas 1) (not .Values.clusterGateway.mesh.enabled) -}}
+{{- fail (printf "\n\nINVALID VALUE: clusterGateway.replicas=%d\n\nWith the gateway mesh disabled (clusterGateway.mesh.enabled=false) the cluster\ngateway must run as a singleton: it holds cluster-agent WebSocket connections in\nprocess memory, so multiple replicas would split that connection state across\npods and break agent connectivity. Either set clusterGateway.replicas=1 or\nenable the gateway mesh (clusterGateway.mesh.enabled=true), which replicates the\nconnection registry across replicas and forwards requests between them.\n" $replicas) -}}
 {{- end -}}
 {{- end }}
 
@@ -230,19 +230,19 @@ Validate that placeholder .invalid hostnames have been replaced with real domain
 */}}
 {{- define "openchoreo-control-plane.validateHostnames" -}}
 {{- $errors := list -}}
-{{- if contains ".invalid" (join "," .Values.openchoreoApi.http.hostnames) -}}
+{{- if and .Values.gateway.enabled .Values.openchoreoApi.enabled .Values.openchoreoApi.http.enabled (contains ".invalid" (join "," .Values.openchoreoApi.http.hostnames)) -}}
   {{- $errors = append $errors "openchoreoApi.http.hostnames contains placeholder domain (.invalid)" -}}
 {{- end -}}
-{{- if contains ".invalid" (join "," .Values.backstage.http.hostnames) -}}
+{{- if and .Values.gateway.enabled .Values.backstage.enabled .Values.backstage.http.enabled (contains ".invalid" (join "," .Values.backstage.http.hostnames)) -}}
   {{- $errors = append $errors "backstage.http.hostnames contains placeholder domain (.invalid)" -}}
 {{- end -}}
-{{- if contains ".invalid" .Values.backstage.baseUrl -}}
+{{- if and .Values.backstage.enabled (contains ".invalid" .Values.backstage.baseUrl) -}}
   {{- $errors = append $errors "backstage.baseUrl contains placeholder domain (.invalid)" -}}
 {{- end -}}
-{{- if and .Values.gateway.tls.enabled (contains ".invalid" .Values.gateway.tls.hostname) -}}
+{{- if and .Values.gateway.enabled .Values.gateway.tls.enabled (contains ".invalid" .Values.gateway.tls.hostname) -}}
   {{- $errors = append $errors "gateway.tls.hostname contains placeholder domain (.invalid)" -}}
 {{- end -}}
-{{- if contains ".invalid" .Values.security.oidc.issuer -}}
+{{- if and .Values.security.enabled (contains ".invalid" .Values.security.oidc.issuer) -}}
   {{- $errors = append $errors "security.oidc.issuer contains placeholder domain (.invalid)" -}}
 {{- end -}}
 {{- if and .Values.backstage.enabled (not .Values.backstage.secretName) -}}
@@ -252,3 +252,34 @@ Validate that placeholder .invalid hostnames have been replaced with real domain
   {{- fail (printf "Placeholder domains found. Set real hostnames for:\n  - %s" (join "\n  - " $errors)) -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Container image reference for a component.
+
+Renders "<repository>:<tag>", with the tag defaulting to .Chart.AppVersion.
+When global.imageRegistry is set, the registry host of the repository is
+replaced with it so every first-party image resolves from a single private
+or mirror registry. A leading path segment counts as a registry host only
+if it contains "." or ":" or equals "localhost", the same rule Docker and
+containerd use to parse image references. The override may itself carry a
+path (e.g. "registry.example.com/ghcr.io") for path-preserving mirrors.
+
+Usage:
+  {{ include "openchoreo-control-plane.image" (dict "context" . "image" .Values.controllerManager.image) }}
+
+Parameters:
+  - context: The current Helm context (usually .)
+  - image: The component image block (repository, tag)
+*/}}
+{{- define "openchoreo-control-plane.image" -}}
+{{- $repo := .image.repository -}}
+{{- with .context.Values.global.imageRegistry -}}
+{{- $parts := splitList "/" $repo -}}
+{{- $first := first $parts -}}
+{{- if and (gt (len $parts) 1) (or (contains "." $first) (contains ":" $first) (eq $first "localhost")) -}}
+{{- $repo = join "/" (rest $parts) -}}
+{{- end -}}
+{{- $repo = printf "%s/%s" . $repo -}}
+{{- end -}}
+{{- printf "%s:%s" $repo (.image.tag | default .context.Chart.AppVersion) -}}
+{{- end }}

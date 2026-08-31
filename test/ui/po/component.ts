@@ -1,7 +1,7 @@
 // Copyright 2026 The OpenChoreo Authors
 // SPDX-License-Identifier: Apache-2.0
 
-import { expect, type Page } from '@playwright/test';
+import { expect, type Locator, type Page } from '@playwright/test';
 import { CreatePO } from './create';
 
 export interface CreateComponentInput {
@@ -9,7 +9,7 @@ export interface CreateComponentInput {
   project: string; // project metadata name to select in the form's Project picker
   // Template card label on the "Browse component templates" page. Restricted
   // to the endpoint-bearing templates: create() drives the endpoint sub-form
-  // ("Add Endpoint" / "Apply changes") unconditionally, which non-HTTP
+  // ("Add Endpoint" / "Save changes") unconditionally, which non-HTTP
   // templates (e.g. "Worker") don't render. Defaults to "Web Application".
   template?: 'Web Application' | 'Service';
   image: string; // container image reference (Container Image deployment source)
@@ -123,9 +123,11 @@ export class ComponentPO {
     await portField.fill(String(port));
     // Commit the endpoint item — the wizard refuses to advance to Review while
     // an endpoint is still in edit mode ("Save or cancel the item you are
-    // currently editing before proceeding.").
+    // currently editing before proceeding."). The button reads "Save" but
+    // carries aria-label="Save changes", so the accessible name (what
+    // getByRole matches) is "Save changes", not the visible "Save".
     await this.page
-      .getByRole('button', { name: 'Apply changes', exact: true })
+      .getByRole('button', { name: 'Save changes', exact: true })
       .click();
   }
 
@@ -254,7 +256,7 @@ export class ComponentPO {
     const panelDeploy = this.page
       .getByRole('button', { name: 'Deploy', exact: true })
       .first();
-    await expect(panelDeploy).toBeEnabled({ timeout: 30_000 });
+    await this.waitForPanelDeployEnabled(panelDeploy);
     await panelDeploy.click();
     await this.page.waitForURL(
       new RegExp(`overrides/${environment}`),
@@ -265,6 +267,15 @@ export class ComponentPO {
       .getByRole('button', { name: 'Deploy', exact: true })
       .first()
       .click();
+  }
+
+  // Reloads and reopens the Set up panel until the Deploy button is enabled.
+  private async waitForPanelDeployEnabled(panelDeploy: Locator): Promise<void> {
+    await expect(async () => {
+      await this.page.reload();
+      await this.openSetupPanel();
+      await expect(panelDeploy).toBeEnabled({ timeout: 5_000 });
+    }).toPass({ timeout: 90_000 });
   }
 
   // Deploy the latest existing release to `environment`. Use when releases
@@ -280,7 +291,7 @@ export class ComponentPO {
     const panelDeploy = this.page
       .getByRole('button', { name: 'Deploy', exact: true })
       .first();
-    await expect(panelDeploy).toBeEnabled({ timeout: 30_000 });
+    await this.waitForPanelDeployEnabled(panelDeploy);
     await panelDeploy.click();
     await this.page.waitForURL(new RegExp(`overrides/${environment}`), {
       timeout: 15_000,

@@ -72,6 +72,22 @@ metadata:
 spec:
   deploymentPipelineRef:
     name: default
+  type:
+    kind: ClusterProjectType
+    name: default
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ProjectReleaseBinding
+metadata:
+  name: ${PROJECT_NAME}-development
+  namespace: ${NS}
+  labels:
+    openchoreo.dev/project: ${PROJECT_NAME}
+    openchoreo.dev/environment: development
+spec:
+  owner:
+    projectName: ${PROJECT_NAME}
+  environment: development
 `;
 
 const postgresYAML = `
