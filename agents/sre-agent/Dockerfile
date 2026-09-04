@@ -24,14 +24,16 @@ COPY sre-agent /app
 RUN --mount=type=cache,target=/root/.cache/uv,id=uv-cache-${TARGETPLATFORM} \
     uv sync --frozen --no-dev --no-editable
 
-# Install zlib1g to get libz.so in builder (ensure it is there)
-RUN apt-get update && apt-get install -y zlib1g
-
-# Detect lib path based on platform
+# libz.so.1 is copied into the distroless runtime below, which ships no package
+# manager. It is NOT installed here: the uv builder base already carries zlib1g
+# (Python links against it), so `apt-get install zlib1g` only re-asserted a
+# package that was already present — at the cost of making every image build
+# depend on reaching a Debian mirror. `set -eux` means a base image that ever
+# stops shipping it fails loudly on the cp below, naming the exact path, which is
+# the signal that step was really there to provide.
 ARG LIBZ_PATH=""
 
-RUN --mount=type=cache,target=/var/cache/apt \
-    set -eux; \
+RUN set -eux; \
     case "$TARGETPLATFORM" in \
         "linux/amd64") LIBZ_PATH="/lib/x86_64-linux-gnu" ;; \
         "linux/arm64") LIBZ_PATH="/lib/aarch64-linux-gnu" ;; \

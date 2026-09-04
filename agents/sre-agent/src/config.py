@@ -31,27 +31,13 @@ class Settings(CommonSettings):
 
     observer_api_url: str = "http://observer:8080"
     # openchoreo_api_url now comes from CommonSettings (same default).
-    ae_api_url: str = ""
-    # Path of the handoff MCP endpoint under ae_api_url. Two deployment shapes
-    # exist for the ae_* handoff tools and they answer on DIFFERENT paths:
-    #   - the standalone aep-mcp-server serves them at "/mcp" (default here), and
-    #   - the in-process aep-api surface serves them at "/sre-mcp".
-    # ae_mcp_url = ae_api_url + ae_mcp_path, so point ae_api_url at whichever
-    # server is deployed and set ae_mcp_path to match. Default "/mcp" tracks the
-    # standalone aep-mcp-server that current installs run (see AE-HANDOFF-DESIGN.md).
-    ae_mcp_path: str = "/mcp"
-    # aep-api's REST base for publishing RCA reports (POST /api/v1/rca-agent/
-    # reports). ae_api_url is the base for the handoff MCP surface (see
-    # ae_mcp_path), and aep_api_url is the base for report publishing — both
-    # target the AEP side; aep_api_url falls back to ae_api_url when unset. See
-    # RCA-REPORT-PUBLISHING.md.
-    aep_api_url: str = ""
-
-    @property
-    def rca_reports_api_base(self) -> str:
-        """Base URL for aep-api's RCA-report REST endpoint (aep_api_url,
-        falling back to ae_api_url)."""
-        return (self.aep_api_url or self.ae_api_url).rstrip("/")
+    handoff_api_url: str = ""
+    # Path of the handoff MCP endpoint under handoff_api_url. A platform may
+    # serve its handoff tools from a standalone MCP server or from an endpoint on
+    # its main API, and those answer on different paths, so the base and the path
+    # are configured separately: handoff_mcp_url = handoff_api_url +
+    # handoff_mcp_path.
+    handoff_mcp_path: str = "/mcp"
 
     @property
     def observer_mcp_url(self) -> str:
@@ -62,11 +48,11 @@ class Settings(CommonSettings):
         return f"{self.openchoreo_api_url.rstrip('/')}/mcp"
 
     @property
-    def ae_mcp_url(self) -> str:
+    def handoff_mcp_url(self) -> str:
         # Handoff MCP endpoint = base + configurable path (see ae_mcp_path).
         # Default path "/mcp" matches the standalone aep-mcp-server; set
         # AE_MCP_PATH=/sre-mcp for the in-process aep-api surface.
-        return f"{self.ae_api_url.rstrip('/')}/{self.ae_mcp_path.strip('/')}"
+        return f"{self.handoff_api_url.rstrip('/')}/{self.handoff_mcp_path.strip('/')}"
 
     report_backend: str = "sqlite"
     sql_backend_uri: str = ""
@@ -96,15 +82,16 @@ class Settings(CommonSettings):
     # Empty ⇒ only the built-in library is used (handoff skill will be missing).
     external_skills_dir: str = ""
     remed_agent: bool = False
-    ae_handoff: bool = False
-    ae_auto_dispatch: bool = True
-    # When true, each completed RCA report is POSTed to aep-api's
-    # create-rca-agent-report endpoint so it surfaces in the AE console's
-    # Alerts bell/list (labs-agentic-engineer #154/#155/#156, PR #161).
-    # Requires aep_api_url (the aep-api REST base) plus the OAUTH_*
-    # client-credentials config the handoff already uses.
-    # See RCA-REPORT-PUBLISHING.md.
-    ae_publish_reports: bool = False
+    handoff_enabled: bool = False
+    # Where completed reports go BESIDES report_backend — a downstream system
+    # that wants to know an analysis finished (a platform console, a tracker, an
+    # event bus). Empty means nowhere, which is the default: an agent publishes
+    # only where it is told to. "webhook" POSTs the report to report_sink_url
+    # with the agent's own OAUTH_* service-account credentials, the same ones its
+    # other outbound calls use. The receiver maps the report to its own schema;
+    # this agent sends the report as it models it. See src/clients/sink/.
+    report_sink: str = ""
+    report_sink_url: str = ""
 
     @model_validator(mode="after")
     def _validate_backend_config(self) -> Settings:
@@ -118,16 +105,35 @@ class Settings(CommonSettings):
             )
         return self
 
+    # Names the receiving platform ships for the tools it exposes and the
+    # answers it gives (src/agent/handoff_provider.py). Mounted at deploy time
+    # like the handoff skill, because the platform owns both.
+    handoff_provider_file: str = ""
+
     @model_validator(mode="after")
-    def _validate_ae_handoff_config(self) -> Settings:
-        if self.ae_handoff and not self.ae_api_url:
-            raise ValueError("ae_handoff=True requires: ae_api_url")
+    def _validate_handoff_config(self) -> Settings:
+        if not self.handoff_enabled:
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("handoff_api_url", self.handoff_api_url),
+                ("handoff_provider_file", self.handoff_provider_file),
+            )
+            if not value
+        ]
+        if missing:
+            # Loud, at startup. Without the descriptor the agent would still
+            # run, still reach the model, and still call the create tool — with
+            # none of the facts pinned onto it. That files an issue nothing can
+            # dedupe and nobody hands over, and it looks like success.
+            raise ValueError(f"handoff_enabled=True requires: {', '.join(missing)}")
         return self
 
     @model_validator(mode="after")
-    def _validate_ae_publish_reports_config(self) -> Settings:
-        if self.ae_publish_reports and not self.rca_reports_api_base:
-            raise ValueError("ae_publish_reports=True requires: aep_api_url (or ae_api_url)")
+    def _validate_report_sink_config(self) -> Settings:
+        if self.report_sink and not self.report_sink_url:
+            raise ValueError(f"report_sink={self.report_sink!r} requires: report_sink_url")
         return self
 
 

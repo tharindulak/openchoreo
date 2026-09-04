@@ -1,22 +1,12 @@
 # Copyright 2026 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the deterministic error fingerprint used by the handoff dedupe key.
+"""Tests for the deterministic error fingerprint used by the handoff dedupe key."""
 
-Runnable with pytest, or directly (`python tests/test_fingerprint.py`) while the
-repo has no pytest dependency wired up.
-"""
-
-import os
-import sys
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-from src.agent.fingerprint import (  # noqa: E402
+from src.agent.fingerprint import (
     error_fingerprint,
     normalize_log_line,
 )
-from src.agent.handoff_logic import dedupe_key_for  # noqa: E402
 
 
 def _log_report(*lines: tuple[str, str], source_type: str = "log") -> dict:
@@ -32,9 +22,7 @@ def _log_report(*lines: tuple[str, str], source_type: str = "log") -> dict:
                         {
                             "evidence": {
                                 "type": "log",
-                                "log_lines": [
-                                    {"level": lvl, "log": msg} for lvl, msg in lines
-                                ],
+                                "log_lines": [{"level": lvl, "log": msg} for lvl, msg in lines],
                             }
                         }
                     ]
@@ -118,22 +106,3 @@ def test_metric_alert_fallback():
 def test_empty_report_returns_none():
     assert error_fingerprint(None) is None
     assert error_fingerprint({}) is None
-
-
-def test_dedupe_key_composition():
-    assert dedupe_key_for("service1") == "sre-rca/service1"
-    assert dedupe_key_for("service1", "abc123") == "sre-rca/service1/abc123"
-    assert dedupe_key_for("service1", None) == "sre-rca/service1"
-
-
-if __name__ == "__main__":
-    failures = 0
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"PASS {name}")
-            except AssertionError as exc:
-                failures += 1
-                print(f"FAIL {name}: {exc}")
-    sys.exit(1 if failures else 0)

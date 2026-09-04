@@ -4,6 +4,7 @@
 from src.clients.backend import ReportBackend, get_report_backend
 from src.clients.llm import get_model, resolve_api_key
 from src.clients.mcp import MCPClient
+from src.clients.sink import ReportSink, get_report_sink
 
 __all__ = [
     "get_model",
@@ -11,4 +12,6 @@ __all__ = [
     "MCPClient",
     "ReportBackend",
     "get_report_backend",
+    "ReportSink",
+    "get_report_sink",
 ]

@@ -26,34 +26,37 @@ def _httpx_client_factory(
     )
 
 
+def build_connections(
+    auth: httpx.Auth, handoff_headers: dict[str, str] | None = None
+) -> dict[str, StreamableHttpConnection]:
+    """The MCP servers this agent talks to, and what each is told.
+
+    `handoff_headers` is this incident's identity (project, component, error
+    signature) under the receiving platform's own header names. It is applied to
+    the HANDOFF connection only: the other two servers have no business knowing
+    which incident a query belongs to.
+    """
+    base: StreamableHttpConnection = {
+        "transport": "streamable_http",
+        "url": settings.observer_mcp_url,
+        "httpx_client_factory": _httpx_client_factory,
+        "auth": auth,
+    }
+    connections: dict[str, StreamableHttpConnection] = {
+        "observability": {**base, "url": settings.observer_mcp_url},
+        "openchoreo": {**base, "url": settings.openchoreo_mcp_url},
+    }
+    if settings.handoff_enabled:
+        handoff: StreamableHttpConnection = {**base, "url": settings.handoff_mcp_url}
+        if handoff_headers:
+            handoff["headers"] = handoff_headers
+        connections["handoff"] = handoff
+    return connections
+
+
 class MCPClient:
-    def __init__(self, auth: httpx.Auth) -> None:
-        obs_connection: StreamableHttpConnection = {
-            "transport": "streamable_http",
-            "url": settings.observer_mcp_url,
-            "httpx_client_factory": _httpx_client_factory,
-            "auth": auth,
-        }
-        oc_connection: StreamableHttpConnection = {
-            "transport": "streamable_http",
-            "url": settings.openchoreo_mcp_url,
-            "httpx_client_factory": _httpx_client_factory,
-            "auth": auth,
-        }
-
-        connections: dict[str, StreamableHttpConnection] = {
-            "observability": obs_connection,
-            "openchoreo": oc_connection,
-        }
-
-        if settings.ae_handoff:
-            connections["ae"] = {
-                "transport": "streamable_http",
-                "url": settings.ae_mcp_url,
-                "httpx_client_factory": _httpx_client_factory,
-                "auth": auth,
-            }
-
+    def __init__(self, auth: httpx.Auth, handoff_headers: dict[str, str] | None = None) -> None:
+        connections = build_connections(auth, handoff_headers)
         self._client = MultiServerMCPClient(connections)
         logger.debug("Initialized MCP client with servers: %s", list(connections))
 

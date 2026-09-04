@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field
 
 from src.models.handoff_result import HandoffResult
+from src.models.remediation_result import ActionStatus
 
 
 class ConfidenceLevel(StrEnum):
@@ -298,3 +299,55 @@ class RCAReport(BaseModel):
         default=None,
         description="AE coding-agent handoff outcome, if the handoff stage ran",
     )
+
+
+def handoff_view(report_data: dict[str, Any]) -> dict[str, Any]:
+    """The report as the issue-writing stage should see it. Two things are
+    withheld, and both are boundaries rather than judgments — the model cannot
+    weigh what it never sees.
+
+    **The observability recommendations, entirely.** `recommended_actions` is how
+    this incident gets fixed; `observability_recommendations` is advice for making
+    FUTURE analyses easier ("add a metric", "raise the log level"), and it is the
+    main source of issues a coding agent cannot act on. This does NOT narrow what
+    a code-level fix can be: a logging gap that is part of THIS incident's root
+    cause arrives as a recommended_action and is filed like any other.
+
+    **The `change` patch on every already-handled (`revised`) action.** The issue
+    this stage writes becomes a coding agent's prompt, and that agent can only
+    edit the repository — so a concrete ReleaseBinding patch in front of it is an
+    invitation to express config as code and open a wrong pull request. The
+    action's description and status stay, because the model does need to know that
+    part of the incident was already fixed by configuration; otherwise it writes
+    an issue asking for that fix again, in code.
+
+    Dict-shaped rather than a method on RCAReport: the stage works on the dumped
+    report, which remediation has already written its statuses back into.
+
+    Returns a copied view, deep only where it edits. The stored report keeps every
+    field: the console renders the observability recommendations and the config
+    patches, so trimming report_data itself would delete something a human is
+    meant to read.
+    """
+    result = report_data.get("result")
+    if not isinstance(result, dict):
+        return report_data
+    recommendations = result.get("recommendations")
+    if not isinstance(recommendations, dict):
+        return report_data
+
+    trimmed: dict[str, Any] = {
+        k: v for k, v in recommendations.items() if k != "observability_recommendations"
+    }
+    actions = trimmed.get("recommended_actions")
+    if isinstance(actions, list):
+        trimmed["recommended_actions"] = [
+            {k: v for k, v in action.items() if k != "change"}
+            if isinstance(action, dict) and action.get("status") == ActionStatus.REVISED
+            else action
+            for action in actions
+        ]
+    return {
+        **report_data,
+        "result": {**result, "recommendations": trimmed},
+    }

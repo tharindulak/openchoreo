@@ -24,7 +24,7 @@ class Tool(str):
 
 OBSERVABILITY = "observability"
 OPENCHOREO = "openchoreo"
-AE = "ae"
+HANDOFF = "handoff"
 
 
 class TOOLS:
@@ -96,16 +96,6 @@ class TOOLS:
         server=OPENCHOREO,
         active_form="Fetching trait schema...",
     )
-    AE_SEARCH_RELATED_ISSUES = Tool(
-        "ae_search_related_issues",
-        server=AE,
-        active_form="Searching related issues...",
-    )
-    AE_CREATE_ISSUE = Tool(
-        "ae_create_issue",
-        server=AE,
-        active_form="Creating GitHub issue...",
-    )
 
 
 _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]
@@ -113,7 +103,14 @@ _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]
 # Tool names grouped by server
 OBSERVABILITY_TOOLS = {t for t in _ALL if t.server == OBSERVABILITY}
 OPENCHOREO_TOOLS = {t for t in _ALL if t.server == OPENCHOREO}
-AE_TOOLS = {t for t in _ALL if t.server == AE}
+# The handoff's tools are NOT listed above: their names belong to whichever
+# platform receives the handoff and arrive in its provider descriptor
+# (src/agent/handoff_provider.py), so this registry cannot know them at import.
+# Their streaming labels are registered at load time instead.
+HANDOFF_ACTIVE_FORMS = {
+    "create_issue": "Filing the issue...",
+    "search_related": "Searching related issues...",
+}
 
 # Active forms for streaming UI
 TOOL_ACTIVE_FORMS: dict[str, str] = {

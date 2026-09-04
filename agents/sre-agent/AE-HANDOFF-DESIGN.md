@@ -17,13 +17,18 @@ off to the **Agentic Engineer (AE) coding agent** by:
 2. **Auto-dispatching** the AE coding agent against that issue.
 
 The AE coding agent then finds and cross-links **related existing issues** (a capability the
-SRE agent lacks today, because it never looks at the code repo) and opens a PR. The PR is the
-human review gate — the coding agent never merges.
+SRE agent lacks today, because it never looks at the code repo) and opens a PR.
+
+**Correction (2026-08-19):** this document originally said "the PR is the human review gate —
+the coding agent never merges" and "No auto-merge. The coding agent stops at 'PR opened'". The
+first half is true and the second was misleading: the *agent* never merges, but AE's **merge
+policy does** (`eventcore/merge.go` squash-merges a pull request that resolves its run's
+milestone work), so an incident fix reached production with no human in it. AEP's ADR-0018 adds
+the human gate this text assumed — see §15.
 
 ### Non-goals
 - The RCA agent's telemetry investigation and scope-enforcement rules are **unchanged**. The
   handoff is a new downstream stage, exactly like the remediation agent was added.
-- No auto-merge. The coding agent stops at "PR opened".
 
 ---
 
@@ -369,11 +374,16 @@ server) — noted here so we can pivot without redesign.
   tenant gate needs. The ONLY accommodation required was audience: the cc token's
   `aud=openchoreo-rca-agent` doesn't match `aep-*`, fixed by extending the compose default to
   `JWT_AUDIENCE: aep-*,openchoreo-rca-agent` (comma-list is supported via `SplitAndTrim`).
-- **OC scoped-name vs AE component name.** OC's alert scope carries the *scoped* component name
-  (`<project>-<component>`, e.g. `demoservices-service1`) while AE keys components unprefixed
-  (`service1`). Handled in CODE — `design_component_name` strips the `<project>-` prefix and
-  `_wrap_create_issue` forces the result onto `ae_create_issue.componentName`, because the model
-  kept copying the prefixed name out of the related issues it had just read.
+- **OC scoped-name vs AE component name — now AE's to resolve (2026-08-31).** OC's alert scope
+  carries the *scoped* component name (`<project>-<component>`, e.g. `demoservices-service1`)
+  while AE keys components unprefixed (`service1`). This repo used to strip the prefix itself
+  (`design_component_name`) because the model kept copying the prefixed name out of the related
+  issues it had just read. The stripping is gone: `_wrap_create_issue` still FORCES
+  `ae_create_issue.componentName` to the alerting component — that part was never about naming,
+  it is about the fact being the alert's rather than the model's — but sends the OpenChoreo name
+  verbatim, and AE resolves it against its own design (`eventcore.ensureNamedComponent`, which
+  tries the name as given first and only then without the prefix). The convention belongs to the
+  side that owns the design; a copy of it here was a copy in the wrong repo. See §16.
 - **Live E2E verified**: alert-triggered RCA → remediation → handoff → GitHub issue
   `demoservices474#5` (correct title, labels, real telemetry in body) → coding-agent Job running.
   `classification=mixed` was correct (2 revised config actions + 1 suggested code action → single
@@ -433,36 +443,56 @@ server) — noted here so we can pivot without redesign.
 4. ~~AE A3~~ — related-issues SKILL.md, force-preloaded alongside `aep:aep`. Done.
 5. ~~Live E2E~~ — done 2026-07-03: alert → RCA → handoff → issue `demoservices474#5` →
    coding-agent dispatch, on the k3d+compose paired stack (see §11 "Resolved during the live
-   E2E run" and §14).
+   E2E run" and §13).
 6. **Not yet done:** update `EXTENDING.md`-equivalent AE docs (this repo's `EXTENDING.md` was
    already updated for the SRE side).
 
 ---
 
-## 14. Enabling the handoff on a k3d OC + docker-compose AE stack (as tested)
+## 13. Enabling the handoff on a k3d OC + docker-compose AE stack (as tested)
 
 1. Build the SRE-agent image from this repo (includes the handoff code) and import it. Use the
    FULLY QUALIFIED name AEP's installers default to, so a later `setup-observability.sh` run
    picks up this local build instead of pulling — an unqualified tag resolves to
    `docker.io/library/<name>` once containerd evicts it, and fails:
-   `docker build -t tharindulak/sre-agent:hand0ff-new .` →
-   `k3d image import tharindulak/sre-agent:hand0ff-new -c <cluster>`.
-2. `kubectl patch cm rca-agent-config -n openchoreo-observability-plane --type=merge -p
-   '{"data":{"AE_HANDOFF":"true","AE_AUTO_DISPATCH":"true","AE_API_URL":"http://host.k3d.internal:9090"}}'`
-   (`AE_API_URL` must point at `aep-mcp-server` — `http://host.k3d.internal:3401` — and the
-   agent appends `AE_MCP_PATH`, default `/mcp`. `:9090` is aep-api's REST base, used only for
-   report publishing via `AEP_API_URL`; see §11 and finding F2.)
-3. `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=tharindulak/sre-agent:hand0ff-new"`.
-4. AE side: extend `aep-api`'s `JWT_AUDIENCE` with `openchoreo-rca-agent` (see §11) and
+   `cd <openchoreo>/agents && docker build -t tharindulak/sre-agent:handoff-provider -f sre-agent/Dockerfile .`
+   → `k3d image import tharindulak/sre-agent:handoff-provider -c <cluster>`.
+   The build context is `agents/`, NOT `agents/sre-agent`: the Dockerfile pulls in the shared
+   `agents/common` package (upstream PR #4372), so building from inside `sre-agent/` cannot
+   resolve its COPY paths.
+2. Mount the receiving platform's provider descriptor — the handoff refuses to run without it,
+   because its tool and argument names are what make a filed issue dedupe and get handed over:
+   `kubectl create configmap rca-agent-handoff-provider -n openchoreo-observability-plane
+   --from-file=provider.json=<aep>/services/aep-mcp-server/handoff/provider.json`, then patch the
+   Deployment with a volume mounting it at `/etc/rca-agent/handoff`.
+   `setup-observability.sh` step 3d does both, alongside the skill mount.
+3. `kubectl patch cm rca-agent-config -n openchoreo-observability-plane --type=merge -p
+   '{"data":{"HANDOFF_ENABLED":"true","HANDOFF_HAND_OVER":"true",
+   "HANDOFF_API_URL":"http://host.k3d.internal:3401",
+   "HANDOFF_PROVIDER_FILE":"/etc/rca-agent/handoff/provider.json",
+   "REPORT_SINK":"webhook","REPORT_SINK_URL":"http://host.k3d.internal:9090/api/v1/rca-agent/reports"}}'`
+   (`HANDOFF_API_URL` must point at `aep-mcp-server` — `:3401` — and the agent appends
+   `HANDOFF_MCP_PATH`, default `/mcp`. Reports go somewhere else entirely: `REPORT_SINK_URL` is
+   aep-api's REST endpoint on `:9090`, and it is the FULL url, not a base — the sink posts exactly
+   there. Omit those two and reports go nowhere, which empties the console Alerts list SILENTLY,
+   because publishing is best-effort by design.
+   These keys replaced `AE_HANDOFF` / `AE_AUTO_DISPATCH` / `AE_API_URL` / `AE_PUBLISH_REPORTS` /
+   `AEP_API_URL` when the handoff stopped carrying AEP's vocabulary. `setup-observability.sh`
+   writes BOTH sets so an image from either side of the rename works — otherwise a fallback to an
+   older tag leaves `HANDOFF_*` set, `AE_HANDOFF` unset, and the handoff silently off.)
+4. `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=tharindulak/sre-agent:handoff-provider"`.
+5. AE side: extend `aep-api`'s `JWT_AUDIENCE` with `openchoreo-rca-agent` (see §11) and
    `docker compose up -d aep-api`.
-5. Safety: ensure `ALERT_SUPPRESSION_WINDOW` is set in `observer-config` (see §11 race note),
+6. Safety: ensure `ALERT_SUPPRESSION_WINDOW` is set in `observer-config` (see §11 race note),
    and remember the OC project/component must exist in AE (same project slug; AE-created
    component).
-6. Verify at agent startup: `MCP connection successful: loaded N tools` (the base set + the 2
-   `ae_*` tools), then trigger and watch for `Running handoff agent` → `Handoff completed:
+7. Verify at agent startup: `MCP connection successful: loaded N tools` (the base set + the 2
+   handoff tools the descriptor names) and `Handoff provider loaded from
+   /etc/rca-agent/handoff/provider.json`, then trigger and watch for `Running handoff agent` →
+   `Handoff completed:
    classification=…, issue=…, adopted=…` in the agent logs.
 
-## 13. Verification performed
+## 14. Verification performed
 
 The originally planned "SRE unit-test the classification prompt" was overtaken: there is no
 classification prompt to test any more, because the classification is derived. What the SRE side
@@ -498,3 +528,179 @@ checks, since both repos had working build/test infrastructure already in place:
 **Explicitly not done** (would create real side effects — see §11 item 3): no call was made
 against the user's live local `aep-api` container to actually create a GitHub issue or dispatch
 a real coding-agent run. That requires the user's explicit go-ahead.
+
+---
+
+## 15. Recurrence and the confidence gate (2026-08-19)
+
+Two changes on the AE side, both recorded in AEP's **ADR-0018 — "a merged fix is not a
+resolved incident"**. Nothing in this repo's contract changes: the handoff still makes ONE
+`ae_create_issue` call with the same forced `dedupeKey`, `componentName`, `adopt` and
+`sre-agent` label.
+
+### 12.1 A recurrence reopens
+
+Closing an issue on merge asserts the incident is over — something nothing had observed. AE's
+dedupe lookup previously matched only OPEN issues, so once a fix merged and closed the issue,
+the next occurrence of the identical fingerprint filed a *fresh* issue and the failed attempt's
+history was lost.
+
+Now, on the same `dedupeKey`:
+
+| Match | Outcome |
+|---|---|
+| An **open** issue | dedupe, unchanged — that issue's run owns its dispatch |
+| A **closed, `completed`** issue carrying `sre-agent` | **recurrence** — reopened |
+| A **closed, `not_planned`** issue | never reopened; a human decided, and a fresh issue is filed |
+
+A recurrence appends `## Recurrence <n>` with this call's body as the new evidence, reopens the
+issue, re-homes it into the currently deployed version's milestone, and re-adopts it. There is
+no time bound.
+
+**What this repo consumes:** `ae_create_issue` answers with `reopened: true` and `recurrence`
+(which attempt this is). Both are stamped onto `HandoffResult` by `apply_handoff_facts` — never
+restated by the model, like `adopted`/`adoption_error` — and `recurrence` is forwarded on the
+RCA report so the console can show "Attempt 3". The handoff never decides a recurrence; AE does,
+deterministically.
+
+The loop **never gives up**: past attempt 3 a recurrence is escalated, which means it is
+reported loudly and worked anyway.
+
+### 12.2 Incident fixes declare their confidence
+
+AE's coding agent now writes `Confidence: high|low` into the pull request body of any PR
+resolving an `sre-agent` issue. `high` merges as before; `low`, missing or unparseable **holds**
+the PR for a human, and the run parks without spending re-dispatch budget. Spec builds are
+unaffected.
+
+This is the human gate §1 originally (wrongly) claimed already existed. It lives entirely in
+AEP; nothing in the SRE agent needs to know about it, beyond the fact that a filed incident may
+now take longer to reach production because a person is in the path.
+
+---
+
+## 16. AE's conventions moved to AE (2026-08-31)
+
+Two things this repo enforced were facts about AE's own model, re-derived here from
+conventions it does not own. Both now live on the AEP side, and `handoff_logic.py` is
+smaller by exactly the amount that was never its business.
+
+### 13.1 The component name is resolved by the side that owns the design
+
+`design_component_name` is **deleted**. It stripped the `<project>-` prefix off the alert
+scope's component so `ae_create_issue.componentName` would match AE's design names.
+
+AE now does that itself, in `eventcore.ensureNamedComponent`: it tries the name **as given**
+first — so a design that genuinely carries a hyphenated `<project>-<name>` component still
+resolves to itself — and retries without the prefix only for a name the design does not carry,
+and only on the resolution sentinel. A name missing under both forms is still refused before
+anything is filed, naming the string the caller actually sent.
+
+That is strictly better than what was here: this repo's version stripped unconditionally, so a
+component genuinely named `<project>-foo` would have been mangled. And it fixes the same bug for
+every caller of create-issue rather than for this one agent — aep-api had a second copy of the
+strip in its own escalation path (`ops/createreport.unprefixedComponent`), which is what a
+convention living on the wrong side of a boundary looks like.
+
+`_wrap_create_issue` still FORCES `componentName`. That was never about naming: the alerting
+component is a fact about the incident, and the model used to answer with whatever name it had
+just read out of a related issue. It now sends the OpenChoreo name verbatim.
+
+### 13.2 AE's planned-work issues arrive already marked
+
+`annotate_platform_issues`, `PLATFORM_WORK_LABEL`, `PLATFORM_ISSUE_NOTE` and
+`_wrap_search_related_issues` are **deleted**. They marked any `aep`-labelled issue in a search
+result as AE's own plan for what to BUILD — the annotation that stopped "Implement service2 slow
+backend" being read as evidence that a slow service2 is fine.
+
+`ae_search_related_issues` now returns those records already carrying `PlatformRecord: true` and
+`ReadAs` (`aep-mcp-server/src/platformIssues.ts`). The `aep` label is AE's arming switch
+(`delivery.LabelAgentWork`); what it means is AE's to say, and this repo was holding a
+hardcoded copy of a string it does not define.
+
+Nothing about the handoff's behaviour changes. The model reads the same fields off the same
+search results; they are simply stamped one hop earlier, by the side that knows what they mean.
+
+### 13.3 What did NOT move, and why
+
+The `sre-agent` label is still applied here, in `_wrap_create_issue`. Moving it needs AE to
+identify the CALLER, and aep-api's verified `Claims` carries no audience — only `Subject`,
+`ClientID` and the org claims — so a server-side stamp would assert provenance it cannot check,
+which is no better than the caller self-reporting it and worse for being invisible. The label is
+load-bearing (it gates `eventcore/unverified.go` and ADR-0018's reopen-on-recurrence), so
+mislabelling another caller's issue would have real consequences. It moves when there is a
+verified caller identity to key it off, not before.
+
+### 13.4 Deploy order
+
+aep-api must be deployed **before** this agent. The removals here make the agent send an
+OpenChoreo-prefixed `componentName` and stop annotating search results; an aep-api that predates
+`ensureNamedComponent` refuses that name with a 400 and files nothing — and nothing retries a
+handoff. The reverse order is safe: the old agent's already-stripped name resolves as-given under
+the new aep-api, and its own annotation is simply redundant with the server's.
+
+---
+
+## 17. Report publishing became a generic sink (2026-08-31)
+
+`src/clients/aep_reports.py` is **deleted** — all 275 lines. It was the last piece of
+this repo that spoke AEP's contract: it spelled `/api/v1/rca-agent/reports`, mapped
+AEP's request field names, translated the classification enum's underscores to AEP's
+hyphens, and rendered the Markdown layout of AEP's console. Carrying that in an
+Apache-2.0 upstream project made every AEP contract change a change to somebody else's
+repository, and `agents/common/` arriving upstream (PR #4372) made the generic/specific
+line explicit enough that it could no longer be ignored.
+
+### 14.1 What this repo has now
+
+`src/clients/sink/` — `ReportSink`, one abstract method, plus `get_report_sink()` keyed on
+`REPORT_SINK`. `WebhookReportSink` POSTs `{"report": <the agent's own report>}` to
+`REPORT_SINK_URL` with the same OAuth2 service-account credentials the handoff already
+uses. It maps nothing. Config: `AE_PUBLISH_REPORTS` and `AEP_API_URL` are gone, replaced by
+`REPORT_SINK` / `REPORT_SINK_URL`.
+
+`should_publish_report` moved to `handoff_logic.py`. It is one rule — a handoff that
+**deduped** folded this incident onto an issue an earlier run already filed, and that run
+already published its own report; a second row would read as unworked while a coding agent
+is on it. It reads the handoff result, which is what `handoff_logic` owns, and keeping it
+out of the sink is what leaves the sink provider-neutral.
+
+### 14.2 What AEP has now
+
+`internal/ops/createreport/native.go` derives every column from the report document:
+classification normalisation, the Alerts headline, the console Markdown, and the issue
+state. `CreateRcaAgentReportRequest` carries exactly one field, `report`, deliberately
+unmodelled — mirroring this repo's `RCAReport` in AEP's OpenAPI would have recreated the
+same coupling in schema form.
+
+The Go port is asserted against golden files generated by running the **real Python** over
+the same reports, so the equivalence was checked against the implementation being replaced
+rather than against a second guess at it.
+
+### 14.3 The coupling this actually removed
+
+AEP was not only receiving this report — it was **parsing it back**. `escalate.go` recovered
+the recommended actions and their statuses out of the rendered `diagnosis` with an anchored
+regex matching, byte for byte, the line this repo's renderer emitted. An undocumented text
+format was acting as a cross-repo contract: reordering that line here would have silently
+stopped AEP escalating, which is the exact failure escalation exists to prevent (two live
+incidents, reports 59796491 and c82f1fb8).
+
+That regex is **deleted**. The decision reads `result.recommendations.recommended_actions[].status`
+as fields. AEP's own docstring had asked for this: *"the durable fix is for the SRE agent to
+send both as structured fields, which is a contract change on its side."*
+
+One softer dependency remains by choice: the escalated issue still quotes the handoff's
+reasoning by slicing the `## Handoff decision` section out of the rendered Markdown
+(`handoffReasoning`). It is display-only, it fails safe to an empty quote, and it now reads
+Markdown AEP itself renders — so it is no longer a cross-repo contract at all.
+
+### 14.4 Deploy order
+
+**AEP first, then this agent** — the same direction as §16, for the opposite reason: AEP has
+to be able to accept the new body before this agent starts sending it. AEP's acceptance
+landed additively first, so both shapes worked during the switch; the flat shape has since
+been removed, which means an agent older than this change can no longer publish at all. Set
+`REPORT_SINK=webhook` and `REPORT_SINK_URL=<aep-api>/api/v1/rca-agent/reports` when rolling
+this image out; leaving them unset publishes nowhere and loses the console's Alerts feed
+silently.

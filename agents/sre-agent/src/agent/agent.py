@@ -22,18 +22,10 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
 from common.auth.bearer import BearerTokenAuth
-from src.agent.handoff_logic import (
-    build_shortcut_result,
-    classify_handoff_shortcut,
-    compose_handoff_result,
-    correction_prompt,
-    handoff_input,
-    unfiled_correction_prompt,
-    unfiled_despite_judgment,
-    unjustified_rulings,
-    wrap_ae_tools_for_handoff,
-)
+from src.agent.fingerprint import error_fingerprint
+from src.agent.handoff_provider import load_provider
 from src.agent.middleware import (
+    HandoffOutcomeMiddleware,
     LoggingMiddleware,
     OutputTransformerMiddleware,
     ToolErrorHandlerMiddleware,
@@ -41,7 +33,6 @@ from src.agent.middleware import (
 from src.agent.skills import create_load_skill_tool, load_skills
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
-    AE_TOOLS,
     ALL_TOOL_FACTORIES,
     OBSERVABILITY_TOOLS,
     OPENCHOREO_TOOLS,
@@ -50,12 +41,13 @@ from src.agent.tool_registry import (
 )
 from src.auth import get_oauth2_auth
 from src.clients import MCPClient, get_model, get_report_backend, resolve_api_key
-from src.clients.aep_reports import publish_rca_report, should_publish_report
+from src.clients.sink import get_report_sink, should_publish_report
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
-from src.models import ChatResponse, HandoffJudgment, RCAReport
-from src.models.rca_report import RootCauseIdentified
+from src.models import ChatResponse, HandoffResult, HandoffSummary, RCAReport
+from src.models.handoff_result import HandoffClassification
+from src.models.rca_report import RootCauseIdentified, handoff_view
 from src.models.remediation_result import RemediationResult
 from src.templates import render
 
@@ -67,7 +59,7 @@ class Agent:
         self,
         *,
         template: str,
-        tools: set[str],
+        tools: set[str] | Callable[[], set[str]],
         middleware: list[type],
         response_format: type[BaseModel],
         recursion_limit: int,
@@ -96,29 +88,22 @@ class Agent:
         model = get_model(model_name=settings.rca_model_name, api_key=resolve_api_key())
         tools: list[BaseTool] = []
 
-        if self.tools:
-            mcp_client = MCPClient(auth=auth)
+        # Resolved per call, not at import: the handoff's tool names live in the
+        # receiving platform's descriptor, which is mounted at deploy time.
+        wanted = self.tools() if callable(self.tools) else self.tools
+        if wanted:
+            mcp_client = MCPClient(
+                auth=auth,
+                handoff_headers=context.get("handoff_headers") if context else None,
+            )
             all_tools = await mcp_client.get_tools()
-            tools = [t for t in all_tools if t.name in self.tools]
+            tools = [t for t in all_tools if t.name in wanted]
             logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
 
         for factory in self._tool_factories:
             tools.append(factory(auth))
 
-        scope = context.get("scope") if context else None
-        if scope is not None and TOOLS.AE_CREATE_ISSUE in {t.name for t in tools}:
-            report_context = context.get("report_context") if context else None
-            # handoff_outcome is the CALLER's dict: the wrapper writes what
-            # ae_create_issue answered into it, and the caller composes those
-            # facts into the report afterwards (compose_handoff_result).
-            tools = wrap_ae_tools_for_handoff(
-                tools,
-                scope,
-                report_context,
-                auto_dispatch=bool(context.get("auto_dispatch", True)) if context else True,
-                outcome=context.get("handoff_outcome") if context else None,
-            )
-
+        provider = context.get("handoff_provider") if context else None
         skills_catalog = []
         if self._skills:
             skills_catalog = load_skills(self._skills)
@@ -130,13 +115,20 @@ class Agent:
             "tools": tools,
             "observability_tools": [t for t in tools if t.name in OBSERVABILITY_TOOLS],
             "openchoreo_tools": [t for t in tools if t.name in OPENCHOREO_TOOLS],
-            "ae_tools": [t for t in tools if t.name in AE_TOOLS],
+            "handoff_tools": [t for t in tools if provider and t.name in provider.tools],
             "skills_catalog": skills_catalog,
         }
         if context:
             template_context.update(context)
 
         middleware = [m() for m in self._middleware_classes]
+        # An instance, not a class: it holds this run's outcome dict, which the
+        # stage reads back afterwards to compose the record from what the
+        # receiver actually answered.
+        if provider is not None and context is not None:
+            outcome = context.get("handoff_outcome")
+            if outcome is not None:
+                middleware.append(HandoffOutcomeMiddleware(provider, outcome))
         if self._use_summarization:
             middleware.append(SummarizationMiddleware(model=model, trigger=("fraction", 0.8)))
 
@@ -202,17 +194,17 @@ REMED_AGENT = Agent(
 
 HANDOFF_AGENT = Agent(
     template="prompts/handoff_agent_prompt.j2",
-    tools={
-        TOOLS.AE_SEARCH_RELATED_ISSUES,
-        TOOLS.AE_CREATE_ISSUE,
-    },
+    # Callable, not a literal: which tools exist is the receiving platform's
+    # answer, read from its descriptor at request time.
+    tools=lambda: load_provider().tools,
     middleware=[
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
     ],
-    # The model returns its JUDGMENT only. The classification is derived from it
-    # plus remediation's statuses, so it is deliberately absent from this schema.
-    response_format=HandoffJudgment,
+    # The model returns a SUMMARY of what it filed, not a decision. The
+    # classification is derived from remediation's statuses, so it is
+    # deliberately absent from this schema.
+    response_format=HandoffSummary,
     recursion_limit=50,
     skills={"issue-fix"},
 )
@@ -324,6 +316,17 @@ async def stream_chat(
         )
 
 
+def _handoff_log_fields(result: HandoffResult) -> tuple[str, str | None, dict[str, Any]]:
+    """What the stage logs about a completed handoff.
+
+    `provider_facts` is logged whole rather than field by field. Its keys come
+    from the receiver's descriptor, so naming one here would put a receiver's
+    vocabulary back into this repository — and a key the receiver did not answer
+    is absent rather than false, which a per-field log line cannot express.
+    """
+    return result.classification, result.created_issue_url, dict(result.provider_facts)
+
+
 async def run_analysis(
     report_id: str,
     alert_id: str,
@@ -416,114 +419,72 @@ async def run_analysis(
                 except Exception as e:
                     logger.error("Remediation agent failed, saving RCA report without it: %s", e)
 
-            if settings.ae_handoff and isinstance(rca_report.result, RootCauseIdentified):
+            if settings.handoff_enabled and isinstance(rca_report.result, RootCauseIdentified):
                 recommended_actions = report_data["result"]["recommendations"][
                     "recommended_actions"
                 ]
-                shortcut_classification = classify_handoff_shortcut(recommended_actions)
+                # Read off remediation's own statuses. The remediation agent
+                # already decided code-versus-config; this stage does not
+                # re-decide it, and no model input reaches this.
+                classification = HandoffClassification.derive(recommended_actions)
 
-                if shortcut_classification is not None:
-                    # Provably no code-level work exists (empty actions, or every
-                    # action already config-handled/applied/dismissed) — skip the
-                    # LLM call entirely rather than pay for a run that can only
-                    # ever conclude "nothing to hand off".
-                    handoff_report = build_shortcut_result(
-                        shortcut_classification, recommended_actions
-                    )
-                    report_data["handoff"] = handoff_report.model_dump()
-                    logger.info(
-                        "Handoff short-circuited: classification=%s", shortcut_classification
-                    )
+                if not classification.needs_stage:
+                    report_data["handoff"] = HandoffResult.without_handoff(
+                        classification, recommended_actions
+                    ).model_dump()
+                    logger.info("Handoff not needed: classification=%s", classification)
                 else:
                     try:
                         logger.info("Running handoff agent")
-                        # Filled by the ae_create_issue wrapper with what AE
+                        provider = load_provider()
+                        # Filled by the outcome middleware with what the receiver
                         # answered; read back after the run so the report's issue
-                        # and dispatch state are facts rather than restatements.
+                        # facts are from the wire rather than restated.
                         handoff_outcome: dict[str, Any] = {}
                         handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
                             auth=get_oauth2_auth(),
                             usage_callback=usage_callback,
                             context={
                                 "scope": scope,
-                                "auto_dispatch": settings.ae_auto_dispatch,
+                                "handoff_provider": provider,
                                 "handoff_outcome": handoff_outcome,
-                                # Drives the error-fingerprint component of the
-                                # dedupe key so distinct root causes on one
-                                # component get distinct issues.
-                                "report_context": report_data,
+                                # This incident's identity, under the receiver's
+                                # own header names. Out of the model's reach: a
+                                # component it chose would be a valid sibling
+                                # filed under the wrong dedupe namespace.
+                                "handoff_headers": provider.incident_headers(
+                                    scope.project,
+                                    scope.component,
+                                    error_fingerprint(report_data),
+                                ),
                             },
                         )
 
-                        # handoff_input, not report_data: the observability
+                        # handoff_view, not report_data: the observability
                         # recommendations are advice about future RCAs, not this
                         # incident's fix, and they are the noise this stage must
                         # not file issues for.
                         messages: list[dict[str, Any]] = [
-                            {
-                                "role": "user",
-                                "content": json.dumps(handoff_input(report_data)),
-                            }
+                            {"role": "user", "content": json.dumps(handoff_view(report_data))}
                         ]
                         handoff_result_raw = await asyncio.wait_for(
                             handoff_agent.ainvoke({"messages": messages}),
                             timeout=settings.analysis_timeout_seconds,
                         )
-                        judgment = handoff_result_raw["structured_response"]
+                        summary = handoff_result_raw["structured_response"]
 
-                        # Two ways this stage can end with no issue, and both
-                        # drop the incident for good — nothing retries a handoff.
-                        # One looks like a decision (declining on grounds that do
-                        # not hold); the other looks like agreement (concluding a
-                        # code change is needed and then filing nothing). Each
-                        # earns exactly one more look with the gap named. Once: a
-                        # second correction would be arguing, not checking.
-                        failures = unjustified_rulings(judgment, recommended_actions)
-                        correction = correction_prompt(failures) if failures else ""
-                        if not failures:
-                            failures = unfiled_despite_judgment(judgment, handoff_outcome)
-                            correction = unfiled_correction_prompt() if failures else ""
-                        if failures:
-                            logger.warning(
-                                "Handoff produced no issue and its own answer does not "
-                                "support that; asking once more. %s",
-                                "; ".join(failures),
-                            )
-                            messages.append({"role": "assistant", "content": judgment.rationale})
-                            messages.append({"role": "user", "content": correction})
-                            handoff_result_raw = await asyncio.wait_for(
-                                handoff_agent.ainvoke({"messages": messages}),
-                                timeout=settings.analysis_timeout_seconds,
-                            )
-                            judgment = handoff_result_raw["structured_response"]
-                            still = unjustified_rulings(
-                                judgment, recommended_actions
-                            ) or unfiled_despite_judgment(judgment, handoff_outcome)
-                            if still:
-                                # Left as the model decided. The grounds are on
-                                # the report either way, so a human reading the
-                                # alert can see what was dropped and why.
-                                logger.warning(
-                                    "Handoff still produced no issue after correction: %s",
-                                    "; ".join(still),
-                                )
-
-                        handoff_report = compose_handoff_result(
-                            judgment,
-                            recommended_actions,
-                            handoff_outcome,
+                        handoff_report = HandoffResult.compose(
+                            classification, summary, handoff_outcome, provider
                         )
-                        if handoff_logging and (summary := handoff_logging.tool_call_summary()):
-                            logger.debug("Handoff tool calls: %s", summary)
+                        if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
+                            logger.debug("Handoff tool calls: %s", summary_line)
                         report_data["handoff"] = handoff_report.model_dump()
+                        log_classification, issue_url, facts = _handoff_log_fields(handoff_report)
                         logger.info(
-                            "Handoff completed: classification=%s, issue=%s, adopted=%s%s",
-                            handoff_report.classification,
-                            handoff_report.created_issue_url,
-                            handoff_report.adopted,
-                            f" ({handoff_report.adoption_error})"
-                            if handoff_report.adoption_error
-                            else "",
+                            "Handoff completed: classification=%s, issue=%s, facts=%s",
+                            log_classification,
+                            issue_url,
+                            facts,
                         )
                     except Exception as e:
                         logger.error("Handoff agent failed, saving RCA report without it: %s", e)
@@ -542,22 +503,21 @@ async def run_analysis(
                 response.get("result"),
             )
 
-            # Publish to the AE console (aep-api) so the report surfaces in the
-            # Alerts bell/list. Best-effort: the report is already stored
-            # locally, so a publish failure must not fail the analysis.
-            if settings.ae_publish_reports:
+            # Hand the finished report to whatever downstream system is
+            # configured. The report is already durable in report_backend by this
+            # point, so publishing is best-effort by construction: a sink that is
+            # down or misconfigured must never cost the analysis.
+            if sink := get_report_sink():
                 publish, skip_reason = should_publish_report(report_data)
                 if not publish:
-                    logger.info("Skipping RCA report publish to AE console: %s", skip_reason)
+                    logger.info("Skipping report publish: %s", skip_reason)
                 else:
                     try:
-                        published_id = await publish_rca_report(report_data, get_oauth2_auth())
-                        logger.info("Published RCA report to AE console: id=%s", published_id)
+                        published_id = await sink.publish(report_data, get_oauth2_auth())
+                        logger.info("Published report to sink: id=%s", published_id)
                     except Exception as e:
                         logger.error(
-                            "Failed to publish RCA report to AE console "
-                            "(report stored locally): %s",
-                            e,
+                            "Failed to publish report to sink (report stored locally): %s", e
                         )
 
         except asyncio.CancelledError:

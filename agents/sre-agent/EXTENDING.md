@@ -31,6 +31,7 @@ Env-driven settings in `src/config.py` (loaded from `.env` / container env):
 | Model / provider | `RCA_MODEL_NAME` (e.g. `anthropic:claude-sonnet-4-6`) | provider-agnostic via `init_chat_model` |
 | LLM key | `RCA_LLM_API_KEY` | |
 | Report backend | `REPORT_BACKEND` (`sqlite`/`postgresql`), `SQL_BACKEND_URI` | storage selection |
+| Report sink | `REPORT_SINK` (`webhook`, or empty), `REPORT_SINK_URL` | publish finished reports downstream (§7a); empty = nowhere |
 | Remediation agent | `REMED_AGENT` (`true`/`false`) | enable the 2nd (revise-recommendations) agent |
 | Concurrency / timeout | `max_concurrent_analyses`, `analysis_timeout_seconds` | |
 | Data sources | `OBSERVER_API_URL`, `OPENCHOREO_API_URL`, `AE_API_URL` | MCP / API endpoints |
@@ -127,6 +128,30 @@ class MyBackend(ReportBackend):
     async def list_rca_reports(self, ...): ...
 ```
 
+## 7a. Report sink — `src/clients/sink/`
+
+The other direction, and the seam to use for a downstream integration. A backend is the
+agent's own store and must answer reads; a **sink** is written to and never read back, so
+`ReportSink` has one method and no lifecycle. `get_report_sink()` selects one by
+`REPORT_SINK`; empty (the default) publishes nowhere.
+
+```python
+class MySink(ReportSink):
+    async def publish(self, report: dict, auth: httpx.Auth) -> str | None: ...
+```
+
+The sink receives the report **as this agent models it**. It must not map field names,
+spell a receiver's endpoint path, rename an enum or render a receiver's presentation
+format — every one of those is a fact about the RECEIVER, and encoding them here means
+carrying a contract this repo does not own and cannot test. The receiver maps what it is
+sent. `WebhookReportSink` is the reference implementation: it POSTs `{"report": ...}` and
+returns whatever `id` comes back.
+
+Publishing is best-effort by construction — the report is durable in `report_backend`
+before any sink runs, so a sink that is down must never cost the analysis. `publish` should
+still RAISE on failure; the caller decides that it is survivable, and a sink that swallows
+errors is indistinguishable from one that works.
+
 ## 8. MCP — both directions
 
 - **Consume more** — `src/clients/mcp.py` connects to MCP servers; point it at additional
@@ -146,10 +171,12 @@ class MyBackend(ReportBackend):
 - The **remediation agent recommends only** — its prompt forbids applying changes
   (`remed_agent_prompt.j2`: *"do not execute or apply any actions"*). Don't change this to
   auto-apply without an explicit design decision.
-- The **handoff agent files only** — it creates a GitHub issue, and (if
-  `AE_AUTO_DISPATCH=true`) AEP adopts that issue as it files it, which is what puts the
-  coding agent on it. The coding agent stops at opening a PR: nothing in this path
-  auto-merges, and PR review is the human gate. See `AE-HANDOFF-DESIGN.md`.
+- The **handoff agent files only** — it creates one issue through the configured handoff
+  MCP server and never merges, deploys or edits anything itself. What happens to that
+  issue afterwards, including whether a coding agent picks it up and whether a resulting
+  pull request needs human approval, is the receiving platform's policy and is not
+  guaranteed here. Do not assume a human gate exists downstream unless that platform
+  documents one.
 - Analysis/remediation run as the agent's **service account** (`get_oauth2_auth()`); chat
   runs as the **user** (`BearerTokenAuth`). Preserve this identity split for new stages.
 - Tools are an **allow-list** (read-only observability + scoped OpenChoreo reads, plus the
