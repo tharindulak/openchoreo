@@ -74,8 +74,8 @@ class Settings(CommonSettings):
     mcp_get_tools_retry_backoff_seconds: float = 2.0
     # Directory of deploy-time-materialized skills, searched BEFORE the built-in
     # src/skills library so a mounted skill overrides or adds to it. The handoff
-    # skill 'issue-fix' is owned by AEP (canonical home:
-    # services/aep-mcp-server/skills/issue-fix in labs-agentic-engineer) and is
+    # skill 'coding-agent-handoff' is owned by AEP (canonical home:
+    # services/aep-mcp-server/skills/coding-agent-handoff in labs-agentic-engineer) and is
     # mounted here via a ConfigMap at deploy time — AEP is the source of truth,
     # so it is NOT baked into this image. In-cluster this points at the mount
     # (e.g. /etc/rca-agent/skills); for local dev point it at a checked-out copy.
@@ -119,6 +119,7 @@ class Settings(CommonSettings):
             for name, value in (
                 ("handoff_api_url", self.handoff_api_url),
                 ("handoff_provider_file", self.handoff_provider_file),
+                ("external_skills_dir", self.external_skills_dir),
             )
             if not value
         ]
@@ -127,6 +128,12 @@ class Settings(CommonSettings):
             # run, still reach the model, and still call the create tool — with
             # none of the facts pinned onto it. That files an issue nothing can
             # dedupe and nobody hands over, and it looks like success.
+            #
+            # The skills mount fails the same way one layer earlier: the stage's
+            # whole playbook is the mounted skill, so without it load_skills
+            # raises once per incident, the broad handler in run_analysis saves
+            # the report with no handoff key, and "the loader broke" is
+            # indistinguishable from "nothing needed handing over".
             raise ValueError(f"handoff_enabled=True requires: {', '.join(missing)}")
         return self
 

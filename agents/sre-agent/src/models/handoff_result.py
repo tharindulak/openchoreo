@@ -196,3 +196,22 @@ class HandoffResult(BaseModel):
                 else "the remaining actions were already applied or dismissed."
             )
         return cls(classification=classification, rationale=rationale)
+
+    @classmethod
+    def failed(cls, classification: HandoffClassification, error: BaseException) -> HandoffResult:
+        """The record for a stage that threw before it could file.
+
+        Without this the report simply has no `handoff` key, which is the shape
+        a legitimate "nothing was handed over" also has — so a crashed loader
+        reads as a decision. The incident itself is safe either way: AE files
+        the issue this stage owed, because its escalation keys off the absent
+        issue number rather than anything said here.
+
+        The classification is the derived one, not a placeholder: the read side
+        defaults an absent value to `none`, which would relabel a code-level
+        incident as nothing-to-do on the very report somebody triages.
+        """
+        return cls(
+            classification=classification,
+            rationale=f"The handoff stage failed before it could file: {error}",
+        )

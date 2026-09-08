@@ -16,7 +16,12 @@ from src.agent.agent import Agent, run_analysis, stream_chat
 from src.agent.middleware import LoggingMiddleware
 from src.helpers import AlertScope
 from src.models import RCAReport
-from tests.factories import make_rca_report, make_remediation_result
+from src.models.remediation_result import ActionStatus
+from tests.factories import (
+    make_rca_report,
+    make_remediation_action,
+    make_remediation_result,
+)
 
 AUTH = httpx.BasicAuth("user", "pass")
 SCOPE = AlertScope(
@@ -236,3 +241,34 @@ async def test_stream_chat_streams_message_and_done():
     assert "message_chunk" in types
     assert events[-1]["type"] == "done"
     assert events[-1]["message"] == "Hello"
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_records_a_failed_handoff_on_the_report():
+    # A stage that threw must not leave the report in the same shape as one that
+    # decided nothing needed handing over — that is the ambiguity a human hits
+    # while triaging, and it hides a broken skill mount.
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    remed = make_remediation_result(
+        recommended_actions=[make_remediation_action(status=ActionStatus.SUGGESTED)]
+    )
+    patches = _patched_run(make_rca_report(), backend, remed_result=remed, remed_enabled=True)
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch("src.agent.agent.load_provider", side_effect=RuntimeError("Skill 'x' not found")),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    handoff = backend.upsert_rca_report.await_args.kwargs["report"]["handoff"]
+    assert handoff["classification"] == "code_level"
+    assert "Skill 'x' not found" in handoff["rationale"]
+    assert handoff["created_issue_number"] is None
+    assert handoff["deduped"] is False

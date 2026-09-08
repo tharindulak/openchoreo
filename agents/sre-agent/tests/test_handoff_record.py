@@ -71,3 +71,18 @@ def test_an_empty_outcome_means_the_create_tool_was_never_reached():
     assert record.created_issue_url is None
     assert record.deduped is False
     assert record.provider_facts == {}
+
+
+def test_failed_records_the_derived_classification_and_names_the_failure():
+    # A stage that threw must not read as a stage that decided. The
+    # classification stays truthful so the console does not relabel a code-level
+    # incident as nothing-to-do, and the rationale says what actually happened.
+    record = HandoffResult.failed(
+        HandoffClassification.CODE_LEVEL, RuntimeError("Skill 'x' not found")
+    )
+    assert record.classification is HandoffClassification.CODE_LEVEL
+    assert "Skill 'x' not found" in record.rationale
+    assert record.created_issue_number is None
+    assert record.created_issue_url is None
+    assert record.deduped is False
+    assert record.related_issues == []

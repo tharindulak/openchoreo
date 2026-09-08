@@ -206,7 +206,7 @@ HANDOFF_AGENT = Agent(
     # deliberately absent from this schema.
     response_format=HandoffSummary,
     recursion_limit=50,
-    skills={"issue-fix"},
+    skills={"coding-agent-handoff"},
 )
 
 CHAT_AGENT = Agent(
@@ -487,7 +487,13 @@ async def run_analysis(
                             facts,
                         )
                     except Exception as e:
-                        logger.error("Handoff agent failed, saving RCA report without it: %s", e)
+                        # Recorded, not just logged: an absent `handoff` key is
+                        # also what a legitimate "nothing to hand over" looks
+                        # like, so a crash would read as a decision.
+                        report_data["handoff"] = HandoffResult.failed(
+                            classification, e
+                        ).model_dump()
+                        logger.error("Handoff agent failed, recorded on the RCA report: %s", e)
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,

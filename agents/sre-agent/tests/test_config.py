@@ -1,7 +1,7 @@
 # Copyright 2026 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ``Settings._validate_backend_config`` and computed URL properties."""
+"""Tests for ``Settings``'s validators and computed URL properties."""
 
 import pytest
 
@@ -54,3 +54,26 @@ def test_openchoreo_mcp_url_appends_mcp_and_strips_slash():
 def test_authz_service_url_strips_trailing_slash():
     s = Settings(openchoreo_api_url="http://api.example.com/")
     assert s.authz_service_url == "http://api.example.com"
+
+
+def test_handoff_requires_the_skill_mount():
+    # The stage's whole playbook is the mounted skill, so without the mount
+    # load_skills raises once per incident and the report records nothing —
+    # a per-run failure where a startup failure belongs.
+    with pytest.raises(ValueError, match="external_skills_dir"):
+        Settings(
+            handoff_enabled=True,
+            handoff_api_url="http://aep:3401",
+            handoff_provider_file="/etc/rca-agent/handoff/provider.json",
+            external_skills_dir="",
+        )
+
+
+def test_handoff_accepts_a_complete_config():
+    s = Settings(
+        handoff_enabled=True,
+        handoff_api_url="http://aep:3401",
+        handoff_provider_file="/etc/rca-agent/handoff/provider.json",
+        external_skills_dir="/etc/rca-agent/skills",
+    )
+    assert s.handoff_enabled
