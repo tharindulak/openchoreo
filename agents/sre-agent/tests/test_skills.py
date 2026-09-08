@@ -3,7 +3,7 @@
 
 """Tests for skill loading — external-mount-first resolution.
 
-The handoff skill 'issue-fix' is owned by AEP and delivered via a deploy-time
+The handoff skill 'coding-agent-handoff' is owned by AEP and delivered via a deploy-time
 mount (EXTERNAL_SKILLS_DIR), so the loader must resolve an external directory
 before the built-in library and fail clearly when a skill is missing.
 """
@@ -33,26 +33,26 @@ def _write_skill(root: Path, name: str, desc: str = "desc") -> None:
 def test_external_dir_takes_precedence():
     with tempfile.TemporaryDirectory() as ext, tempfile.TemporaryDirectory() as builtin:
         ext_p, builtin_p = Path(ext), Path(builtin)
-        _write_skill(ext_p, "issue-fix", "from-external")
-        _write_skill(builtin_p, "issue-fix", "from-builtin")
-        skill = load_skill("issue-fix", [ext_p, builtin_p])
+        _write_skill(ext_p, "coding-agent-handoff", "from-external")
+        _write_skill(builtin_p, "coding-agent-handoff", "from-builtin")
+        skill = load_skill("coding-agent-handoff", [ext_p, builtin_p])
         assert skill.description == "from-external", skill.description
 
 
 def test_fallback_to_builtin():
     with tempfile.TemporaryDirectory() as ext, tempfile.TemporaryDirectory() as builtin:
         ext_p, builtin_p = Path(ext), Path(builtin)
-        _write_skill(builtin_p, "issue-fix", "from-builtin")  # only in built-in
-        skill = load_skill("issue-fix", [ext_p, builtin_p])
+        _write_skill(builtin_p, "coding-agent-handoff", "from-builtin")  # only in built-in
+        skill = load_skill("coding-agent-handoff", [ext_p, builtin_p])
         assert skill.description == "from-builtin", skill.description
 
 
 def test_not_found_raises_clear_error():
     with tempfile.TemporaryDirectory() as ext:
         try:
-            load_skill("issue-fix", [Path(ext)])
+            load_skill("coding-agent-handoff", [Path(ext)])
         except FileNotFoundError as exc:
-            assert "issue-fix" in str(exc), exc
+            assert "coding-agent-handoff" in str(exc), exc
             assert "EXTERNAL_SKILLS_DIR" in str(exc), exc
         else:
             raise AssertionError("expected FileNotFoundError when skill is absent")
@@ -60,13 +60,13 @@ def test_not_found_raises_clear_error():
 
 def test_name_mismatch_raises():
     with tempfile.TemporaryDirectory() as root:
-        d = Path(root) / "issue-fix"
+        d = Path(root) / "coding-agent-handoff"
         d.mkdir()
         (d / "SKILL.md").write_text(_SKILL_MD.format(name="other", desc="x"))
         try:
-            load_skill("issue-fix", [Path(root)])
+            load_skill("coding-agent-handoff", [Path(root)])
         except ValueError as exc:
-            assert "expected 'issue-fix'" in str(exc), exc
+            assert "expected 'coding-agent-handoff'" in str(exc), exc
         else:
             raise AssertionError("expected ValueError on name mismatch")
 
@@ -95,7 +95,7 @@ def test_search_dirs_builtin_only_when_unset():
 def test_load_skills_sorted():
     with tempfile.TemporaryDirectory() as root:
         root_p = Path(root)
-        _write_skill(root_p, "issue-fix")
+        _write_skill(root_p, "coding-agent-handoff")
         _write_skill(root_p, "aardvark")
-        result = load_skills({"issue-fix", "aardvark"}, [root_p])
-        assert [s.name for s in result] == ["aardvark", "issue-fix"], result
+        result = load_skills({"coding-agent-handoff", "aardvark"}, [root_p])
+        assert [s.name for s in result] == ["aardvark", "coding-agent-handoff"], result

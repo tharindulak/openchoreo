@@ -13,7 +13,7 @@ the model decides it's relevant (loaded on demand, same as Claude Agent
 SDK skills — just adapted to a framework with no built-in equivalent).
 
 Skills are resolved from `settings.external_skills_dir` FIRST (a deploy-time
-mount — e.g. the AEP-owned `issue-fix` skill delivered via a ConfigMap), then
+mount — e.g. the AEP-owned `coding-agent-handoff` skill delivered via a ConfigMap), then
 from the built-in `src/skills` library baked into the image. The external
 directory therefore overrides or adds to the built-in one.
 """
@@ -86,7 +86,7 @@ def load_skill(name: str, search_dirs: list[Path] | None = None) -> Skill:
     searched = ", ".join(str(root / name / "SKILL.md") for root in roots)
     raise FileNotFoundError(
         f"Skill '{name}' not found. Searched: {searched}. "
-        "For a deploy-time-mounted skill (e.g. 'issue-fix', owned by AEP), set "
+        "For a deploy-time-mounted skill (e.g. 'coding-agent-handoff', owned by AEP), set "
         "EXTERNAL_SKILLS_DIR to the mounted skills directory."
     )
 
