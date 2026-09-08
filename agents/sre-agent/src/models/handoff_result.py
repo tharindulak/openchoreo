@@ -84,7 +84,7 @@ class HandoffSummary(BaseModel):
     )
     related_issues: list[RelatedIssue] = Field(
         default_factory=list,
-        description="Existing GitHub issues found related to this root cause",
+        description="Existing issues found related to this root cause",
     )
 
 
@@ -114,7 +114,7 @@ class HandoffResult(BaseModel):
     )
     related_issues: list[RelatedIssue] = Field(
         default_factory=list,
-        description="Existing GitHub issues found related to this root cause",
+        description="Existing issues found related to this root cause",
     )
     deduped: bool = Field(
         default=False,
