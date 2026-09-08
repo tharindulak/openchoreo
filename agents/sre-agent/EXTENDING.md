@@ -17,7 +17,7 @@ required, with the exact files involved.
 | Add a new agent stage (like remediation) | `Agent(...)` in `src/agent/agent.py` + wire into `run_analysis` | yes |
 | Change the report shape / contract | `src/models/rca_report.py` | yes |
 | Toggle the remediation agent | `REMED_AGENT` env | no |
-| Toggle the AE coding-agent handoff | `AE_HANDOFF` / `AE_AUTO_DISPATCH` env (`src/config.py`) | no |
+| Toggle the handoff stage | `HANDOFF_ENABLED` env, with `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_PROVIDER_FILE` and `EXTERNAL_SKILLS_DIR` (`src/config.py`) | no |
 | Expose new capabilities to upstream agents | `@mcp_server.tool()` in `src/mcp_server.py` | yes |
 
 ---
@@ -34,7 +34,8 @@ Env-driven settings in `src/config.py` (loaded from `.env` / container env):
 | Report sink | `REPORT_SINK` (`webhook`, or empty), `REPORT_SINK_URL` | publish finished reports downstream (§7a); empty = nowhere |
 | Remediation agent | `REMED_AGENT` (`true`/`false`) | enable the 2nd (revise-recommendations) agent |
 | Concurrency / timeout | `max_concurrent_analyses`, `analysis_timeout_seconds` | |
-| Data sources | `OBSERVER_API_URL`, `OPENCHOREO_API_URL`, `AE_API_URL` | MCP / API endpoints |
+| Data sources | `OBSERVER_API_URL`, `OPENCHOREO_API_URL` | MCP / API endpoints |
+| Handoff stage | `HANDOFF_ENABLED`, `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_PROVIDER_FILE`, `EXTERNAL_SKILLS_DIR` | hand code-level work to a receiving platform: its MCP endpoint, the descriptor naming its tools/headers/answers, and the skills mount its playbook arrives in (§8) |
 | Auth | OAuth2 / JWT vars + `auth-config.yaml` | authn/authz |
 
 ## 2. Prompt customization (Jinja templates, no logic)
@@ -43,6 +44,10 @@ Env-driven settings in `src/config.py` (loaded from `.env` / container env):
   Rewrite instructions, investigation strategy, recommendation rules, output guidance.
 - **Telemetry formatting** — `src/templates/middleware/{logs,metrics,traces,trace_spans}.j2`.
   Control how raw observability data is shaped before it reaches the LLM.
+- **Not the handoff prompt** — `handoff_agent_prompt.j2` carries only the run-time scope
+  values and the skill catalog; it is a loader. How the handoff decides, searches and
+  writes its issue lives in the `coding-agent-handoff` skill the receiving platform
+  mounts (`EXTERNAL_SKILLS_DIR`, see §1). Customize that skill, not this template.
 
 Prompts are rendered with a context that includes the available tools (split into
 `observability_tools` / `openchoreo_tools`) and the request scope — see
@@ -155,10 +160,13 @@ errors is indistinguishable from one that works.
 ## 8. MCP — both directions
 
 - **Consume more** — `src/clients/mcp.py` connects to MCP servers; point it at additional
-  servers to give agents new tool sources. The `ae` server (AE coding-agent integration,
-  see `AE-HANDOFF-DESIGN.md`) is added conditionally when `AE_HANDOFF=true`, following the
-  same `observability`/`openchoreo` pattern — reuses the caller's `httpx.Auth`, no separate
-  auth plumbing.
+  servers to give agents new tool sources. The `handoff` server (the receiving
+  platform this agent hands code-level work to, see `AE-HANDOFF-DESIGN.md`) is added
+  conditionally when `HANDOFF_ENABLED=true`, following the same
+  `observability`/`openchoreo` pattern — reuses the caller's `httpx.Auth`, no separate
+  auth plumbing. Its tool NAMES are not in `tool_registry.py`: they arrive in the
+  provider descriptor (`HANDOFF_PROVIDER_FILE`), as do the per-run identity headers
+  that connection carries.
 - **Expose more** — `src/mcp_server.py` makes the agent itself an MCP server
   (`analyze_runtime_state`, `get_rca_report`). Add `@mcp_server.tool()` functions to expose
   new capabilities to upstream agents (e.g. the portal assistant). Auth is enforced by the

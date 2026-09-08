@@ -305,19 +305,76 @@ Then hard‑reload the portal → the report appears for the component.
 | Agent returns **500**, URL `/namespaces//projects/` | Rule missing the **name** labels → empty scope | Add `openchoreo.dev/{namespace,project,component,environment}` labels (§5) |
 | Rule rejected: `threshold must be greater than zero` | `threshold: 0` | Use `operator: gte, threshold: 1` |
 | Rule rejected: `notifications.channels … at least 1 item` | empty `channels` | Add ≥1 channel (placeholder OK) |
-| Second trigger does nothing within the hour | `ALERT_SUPPRESSION_WINDOW=1h` per rule+component | Rotate the rule name per demo run |
+| Second trigger does nothing within the hour | `ALERT_SUPPRESSION_WINDOW=1h` per rule+component — also blocks a re‑fire when an accepted analysis hard‑fails (§7) | Rotate the rule name per demo run |
 | Metric alert won't model a broken image | metric source only supports `cpu_usage`/`memory_usage` | Use a `log` (or `metric`/`budget`) source |
 | Watching `/tmp/sre-agent.log` shows nothing on auto‑runs | That's the **local** `:8000` dev agent; auto path hits the **in‑cluster** `ai-rca-agent` | Tail the pod logs |
 
-## 7. Optional: AE coding‑agent handoff (`AE_HANDOFF`)
+## 7. Optional: coding‑agent handoff (`HANDOFF_ENABLED`)
 
-With the handoff feature enabled, an RCA whose recommendations include a **code‑level** fix
-additionally files a GitHub issue via the Agentic Engineer platform. Filing IS the dispatch:
-with `AE_AUTO_DISPATCH=true` (the default) AEP adopts the issue as it creates it and a coding
-run picks it up; with `false` the issue is recorded and waits for a human. Setup, auth
-accommodation (`JWT_AUDIENCE`), the component‑naming rule, and the duplicate‑dispatch race
-warning (set `ALERT_SUPPRESSION_WINDOW`!) are documented in **`AE-HANDOFF-DESIGN.md` §11/§14**.
-Verified E2E on this stack 2026‑07‑03: alert → RCA → issue → coding‑agent PR flow.
+With the handoff stage enabled, an RCA whose remediation left **code‑level** work files one
+issue with the receiving engineering platform (AEP today). **Filing IS the hand‑over:** the
+create call adopts the issue, and whether a coding run actually starts comes back in its answer
+(`adopted`, `adoptionError`, `suppressed`) and is recorded on the RCA report — it is the
+receiver's answer, not a switch on this side. The design is `AE-HANDOFF-DESIGN.md`; what a
+deployment has to set is here.
+
+The stage needs four things, and refuses to start (at boot, not at the first handoff) without
+the last two:
+
+1. **The image** must carry the handoff stage. Build from `agents/`, NOT `agents/sre-agent` —
+   the Dockerfile pulls in the shared `agents/common` package (upstream PR #4372), so a build
+   from inside `sre-agent/` cannot resolve its COPY paths. Use the fully qualified name the
+   installer defaults to, or containerd will later resolve the tag to
+   `docker.io/library/<name>` and fail:
+   `cd <openchoreo>/agents && docker build -t <repo>/sre-agent:<tag> -f sre-agent/Dockerfile .`
+   → `k3d image import <repo>/sre-agent:<tag> -c <cluster>`, then
+   `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=<repo>/sre-agent:<tag>"`.
+2. **The receiver's descriptor and skill, mounted.** The descriptor names the receiver's tools,
+   the per‑run identity headers and the answer fields; the skill is the stage's entire playbook
+   (there is no built‑in copy, so an unmounted skill fails agent creation). AEP's
+   `deployments/scripts/setup-observability.sh` step 3d renders both into ConfigMaps and patches
+   the Deployment with the volumes, the mounts and `EXTERNAL_SKILLS_DIR`. Edit the skill or the
+   descriptor on the AEP side and re‑apply — **no SRE image rebuild**. Editing the agent's own
+   prompt template DOES need a rebuild; it is baked into the image.
+3. **Config** on `rca-agent-config`:
+   ```
+   kubectl patch cm rca-agent-config -n openchoreo-observability-plane --type=merge -p \
+     '{"data":{"HANDOFF_ENABLED":"true",
+                "HANDOFF_API_URL":"http://host.k3d.internal:3401",
+                "HANDOFF_PROVIDER_FILE":"/etc/rca-agent/handoff/provider.json",
+                "REPORT_SINK":"webhook",
+                "REPORT_SINK_URL":"http://host.k3d.internal:9090/api/v1/rca-agent/reports"}}'
+   ```
+   `HANDOFF_API_URL` is the receiver's MCP base (AEP's `aep-mcp-server`, `:3401`) and the agent
+   appends `HANDOFF_MCP_PATH` (default `/mcp`). `REPORT_SINK_URL` is something else entirely —
+   aep‑api's REST endpoint on `:9090`, and the FULL url, not a base. Omit the sink pair and
+   reports go nowhere, which empties the console's Alerts list **silently**, because publishing
+   is best‑effort by design.
+4. **Auth**: extend the receiver's `JWT_AUDIENCE` with `openchoreo-rca-agent`. The agent's
+   client‑credentials token carries the right issuer and the `ouHandle` org claim already; only
+   the audience needed accommodating (comma‑lists are supported).
+
+**Two operational warnings**, both learned live:
+
+- **Set `ALERT_SUPPRESSION_WINDOW`** (§3b; `1h` default). It de‑dups repeated fires of one rule
+  per component, which keeps concurrent RCA runs for one incident rare. Correctness does not
+  depend on it — the receiver derives a dedupe key per incident and answers `deduped` — but
+  duplicate concurrent runs waste a coding cycle each.
+- **The same window can silently drop an incident.** The observer marks an alert consumed on
+  acceptance, not completion, so an analysis that hard‑fails after acceptance is not re‑fired
+  for the rest of the window. A CPU‑starved node once timed out the agent's OAuth token fetch
+  and lost both in‑flight analyses this way. If an alert "fired but no report exists", check the
+  agent log for a token/timeout error before assuming the rule is wrong.
+
+**Scope boundary:** the handoff only reaches components the receiving platform itself created —
+AEP resolves the component against its own design before filing, and any other name fails the
+call with a 400 (naming the string that was sent) before an issue exists. Nothing retries a
+handoff.
+
+**Verify** at agent startup: `MCP connection successful: loaded N tools` (the base set plus the
+two the descriptor names) and `Handoff provider loaded from …`. Then trigger and watch for
+`Running handoff agent` → `Handoff completed: classification=…, issue=…, facts=…`.
+Verified E2E on this stack 2026‑07‑03: alert → RCA → issue → coding‑agent run.
 
 ## Important behavior note
 
