@@ -46,7 +46,6 @@ from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
 from src.models import ChatResponse, HandoffResult, HandoffSummary, RCAReport
-from src.models.handoff_result import HandoffClassification
 from src.models.rca_report import RootCauseIdentified, handoff_view
 from src.models.remediation_result import RemediationResult
 from src.templates import render
@@ -128,7 +127,11 @@ class Agent:
         if provider is not None and context is not None:
             outcome = context.get("handoff_outcome")
             if outcome is not None:
-                middleware.append(HandoffOutcomeMiddleware(provider, outcome))
+                middleware.append(
+                    HandoffOutcomeMiddleware(
+                        provider, outcome, context.get("handoff_action_statuses")
+                    )
+                )
         if self._use_summarization:
             middleware.append(SummarizationMiddleware(model=model, trigger=("fraction", 0.8)))
 
@@ -420,80 +423,81 @@ async def run_analysis(
                     logger.error("Remediation agent failed, saving RCA report without it: %s", e)
 
             if settings.handoff_enabled and isinstance(rca_report.result, RootCauseIdentified):
-                recommended_actions = report_data["result"]["recommendations"][
-                    "recommended_actions"
+                # The statuses themselves, not a verdict over them. What they
+                # MEAN is AE's contract — the same rule its own escalation
+                # reads — and it answers back the classification it chose. One
+                # entry per action, None where remediation set none: filtering
+                # the Nones out would read as an action-free report, which is
+                # the opposite conclusion.
+                action_statuses = [
+                    action.get("status")
+                    for action in report_data["result"]["recommendations"][
+                        "recommended_actions"
+                    ]
                 ]
-                # Read off remediation's own statuses. The remediation agent
-                # already decided code-versus-config; this stage does not
-                # re-decide it, and no model input reaches this.
-                classification = HandoffClassification.derive(recommended_actions)
+                try:
+                    logger.info("Running handoff agent")
+                    provider = load_provider()
+                    # Filled by the outcome middleware with what the receiver
+                    # answered; read back after the run so the report's issue
+                    # facts are from the wire rather than restated.
+                    handoff_outcome: dict[str, Any] = {}
+                    handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
+                        auth=get_oauth2_auth(),
+                        usage_callback=usage_callback,
+                        context={
+                            "scope": scope,
+                            "handoff_provider": provider,
+                            "handoff_outcome": handoff_outcome,
+                            # Forced onto the create call by middleware, not
+                            # asked of the model: a status it chose would move
+                            # AE's classification, its adoption and its dedupe
+                            # namespace on the strength of a re-reading.
+                            "handoff_action_statuses": action_statuses,
+                            # This incident's identity, under the receiver's
+                            # own header names. Out of the model's reach: a
+                            # component it chose would be a valid sibling
+                            # filed under the wrong dedupe namespace.
+                            "handoff_headers": provider.incident_headers(
+                                scope.project,
+                                scope.component,
+                                error_fingerprint(report_data),
+                            ),
+                        },
+                    )
 
-                if not classification.needs_stage:
-                    report_data["handoff"] = HandoffResult.without_handoff(
-                        classification, recommended_actions
-                    ).model_dump()
-                    logger.info("Handoff not needed: classification=%s", classification)
-                else:
-                    try:
-                        logger.info("Running handoff agent")
-                        provider = load_provider()
-                        # Filled by the outcome middleware with what the receiver
-                        # answered; read back after the run so the report's issue
-                        # facts are from the wire rather than restated.
-                        handoff_outcome: dict[str, Any] = {}
-                        handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
-                            auth=get_oauth2_auth(),
-                            usage_callback=usage_callback,
-                            context={
-                                "scope": scope,
-                                "handoff_provider": provider,
-                                "handoff_outcome": handoff_outcome,
-                                # This incident's identity, under the receiver's
-                                # own header names. Out of the model's reach: a
-                                # component it chose would be a valid sibling
-                                # filed under the wrong dedupe namespace.
-                                "handoff_headers": provider.incident_headers(
-                                    scope.project,
-                                    scope.component,
-                                    error_fingerprint(report_data),
-                                ),
-                            },
-                        )
+                    # handoff_view, not report_data: the observability
+                    # recommendations are advice about future RCAs, not this
+                    # incident's fix, and they are the noise this stage must
+                    # not file issues for.
+                    messages: list[dict[str, Any]] = [
+                        {"role": "user", "content": json.dumps(handoff_view(report_data))}
+                    ]
+                    handoff_result_raw = await asyncio.wait_for(
+                        handoff_agent.ainvoke({"messages": messages}),
+                        timeout=settings.analysis_timeout_seconds,
+                    )
+                    summary = handoff_result_raw["structured_response"]
 
-                        # handoff_view, not report_data: the observability
-                        # recommendations are advice about future RCAs, not this
-                        # incident's fix, and they are the noise this stage must
-                        # not file issues for.
-                        messages: list[dict[str, Any]] = [
-                            {"role": "user", "content": json.dumps(handoff_view(report_data))}
-                        ]
-                        handoff_result_raw = await asyncio.wait_for(
-                            handoff_agent.ainvoke({"messages": messages}),
-                            timeout=settings.analysis_timeout_seconds,
-                        )
-                        summary = handoff_result_raw["structured_response"]
-
-                        handoff_report = HandoffResult.compose(
-                            classification, summary, handoff_outcome, provider
-                        )
-                        if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
-                            logger.debug("Handoff tool calls: %s", summary_line)
-                        report_data["handoff"] = handoff_report.model_dump()
-                        log_classification, issue_url, facts = _handoff_log_fields(handoff_report)
-                        logger.info(
-                            "Handoff completed: classification=%s, issue=%s, facts=%s",
-                            log_classification,
-                            issue_url,
-                            facts,
-                        )
-                    except Exception as e:
-                        # Recorded, not just logged: an absent `handoff` key is
-                        # also what a legitimate "nothing to hand over" looks
-                        # like, so a crash would read as a decision.
-                        report_data["handoff"] = HandoffResult.failed(
-                            classification, e
-                        ).model_dump()
-                        logger.error("Handoff agent failed, recorded on the RCA report: %s", e)
+                    handoff_report = HandoffResult.compose(
+                        summary, handoff_outcome, provider
+                    )
+                    if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
+                        logger.debug("Handoff tool calls: %s", summary_line)
+                    report_data["handoff"] = handoff_report.model_dump()
+                    log_classification, issue_url, facts = _handoff_log_fields(handoff_report)
+                    logger.info(
+                        "Handoff completed: classification=%s, issue=%s, facts=%s",
+                        log_classification,
+                        issue_url,
+                        facts,
+                    )
+                except Exception as e:
+                    # Recorded, not just logged: an absent `handoff` key is
+                    # also what a legitimate "nothing to hand over" looks
+                    # like, so a crash would read as a decision.
+                    report_data["handoff"] = HandoffResult.failed(e).model_dump()
+                    logger.error("Handoff agent failed, recorded on the RCA report: %s", e)
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,

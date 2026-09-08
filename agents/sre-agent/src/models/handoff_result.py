@@ -6,12 +6,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.models.remediation_result import ActionStatus
-
-# A status that needs nothing further from anybody. Anything else — including a
-# status that is absent entirely — is pending work.
-_SETTLED = frozenset({ActionStatus.REVISED, ActionStatus.APPLIED, ActionStatus.DISMISSED})
-
 
 class HandoffClassification(StrEnum):
     """Whether the fix requires a config change, a code change, or both"""
@@ -20,38 +14,6 @@ class HandoffClassification(StrEnum):
     CODE_LEVEL = "code_level"
     MIXED = "mixed"
     NONE = "none"
-
-    @classmethod
-    def derive(cls, recommended_actions: list[dict[str, Any]]) -> HandoffClassification:
-        """Read the classification off remediation's own statuses.
-
-        No model input reaches this. The remediation agent already decided
-        code-versus-config — `revised` means it expressed the action as a
-        ReleaseBinding change, `suggested` means it could not — and the handoff's
-        old job of re-deciding that is exactly what failed on two live reports.
-
-        An absent status is PENDING, not settled: remediation did not run, so
-        there is no upstream determination to read, and an unfiled defect is
-        dropped for good while an unnecessary issue is closed in minutes.
-        """
-        if not recommended_actions:
-            return cls.NONE
-        statuses = [a.get("status") for a in recommended_actions]
-        pending = any(s not in _SETTLED for s in statuses)
-        config_handled = ActionStatus.REVISED in statuses
-        if not pending:
-            return cls.CONFIG_LEVEL if config_handled else cls.NONE
-        return cls.MIXED if config_handled else cls.CODE_LEVEL
-
-    @property
-    def needs_stage(self) -> bool:
-        """Whether the issue-writing stage has anything to do.
-
-        The gate, not a cost optimisation: a classification with no pending work
-        cannot produce an issue, so running an LLM over it can only ever conclude
-        that there was nothing to hand over.
-        """
-        return self in (HandoffClassification.CODE_LEVEL, HandoffClassification.MIXED)
 
 
 class RelatedIssue(BaseModel):
@@ -66,7 +28,7 @@ class HandoffSummary(BaseModel):
     """The stage's structured output: what it did, and the links it found.
 
     Deliberately carries no decision. Whether code-level work exists follows
-    from remediation's own statuses (HandoffClassification.derive), and whether
+    from remediation's own statuses, which AE derives and answers, and whether
     a fix is warranted is the coding agent's call, made with the repository and
     the spec in front of it. A model asked to restate either would be in a
     position to contradict the data it was handed — which is what happened.
@@ -92,7 +54,7 @@ class HandoffResult(BaseModel):
     """The persisted record of the handoff — the agent's summary plus the facts.
 
     Only `rationale` and `related_issues` come from the model. `classification`
-    is DERIVED from remediation's statuses (HandoffClassification.derive), never
+    is read back from what AE derived off remediation's statuses, never
     restated by the model. The issue number, url and `deduped` are stamped from
     what the receiver answered.
 
@@ -144,26 +106,45 @@ class HandoffResult(BaseModel):
     )
 
     @classmethod
+    def _classification_from(
+        cls, outcome: dict[str, Any], provider: "HandoffProvider"
+    ) -> HandoffClassification:
+        """Read back the classification the RECEIVER derived.
+
+        It is not derived here. What the remediation statuses mean is AE's
+        contract, it is the same rule AE's own escalation reads, and two
+        derivations of one fact are two things that can disagree. AE spells the
+        values with hyphens; this enum spells them with underscores.
+
+        An unanswered call — the stage threw, the model ended its turn without
+        calling create, the receiver answered something unrecognised — records
+        `code_level`. That is the safe direction and the one the read side needs:
+        an absent value there defaults to `none`, which would relabel a real
+        code-level incident as nothing-to-do on the report somebody triages.
+        """
+        answered = outcome.get(provider.answer_classification)
+        if isinstance(answered, str):
+            try:
+                return HandoffClassification(answered.replace("-", "_"))
+            except ValueError:
+                pass
+        return HandoffClassification.CODE_LEVEL
+
+    @classmethod
     def compose(
         cls,
-        classification: "HandoffClassification",
         summary: "HandoffSummary",
         outcome: dict[str, Any],
         provider: "HandoffProvider",
     ) -> "HandoffResult":
         """Assemble the persisted record.
 
-        ``classification`` is passed in rather than re-derived: the stage
-        already derived it to decide whether to run, and two derivations of
-        one fact are two things that can disagree.
-
         An empty outcome means the create tool was never reached — the stage
-        errored, or the model ended its turn without calling it. The derived
-        classification still tells the truth about whether code work exists,
-        and AE's own escalation is what notices the absent issue.
+        errored, or the model ended its turn without calling it. AE's own
+        escalation is what notices the absent issue; nothing here retries.
         """
         return cls(
-            classification=classification,
+            classification=cls._classification_from(outcome, provider),
             rationale=summary.rationale,
             related_issues=summary.related_issues,
             created_issue_number=outcome.get(provider.answer_issue_number),
@@ -173,32 +154,7 @@ class HandoffResult(BaseModel):
         )
 
     @classmethod
-    def without_handoff(
-        cls,
-        classification: HandoffClassification,
-        recommended_actions: list[dict[str, Any]],
-    ) -> HandoffResult:
-        """The record for an incident whose stage never ran.
-
-        It still says why, in the report, because "no issue was filed" and "the
-        handoff never ran" look identical to a human triaging an alert.
-        """
-        if classification is HandoffClassification.CONFIG_LEVEL:
-            rationale = (
-                f"All {len(recommended_actions)} recommended action(s) were already translated "
-                "into OpenChoreo ReleaseBinding configuration changes by the remediation agent "
-                "— no source code change is required."
-            )
-        else:
-            rationale = "No recommended action requires further work: " + (
-                "the remediation agent produced no recommended actions."
-                if not recommended_actions
-                else "the remaining actions were already applied or dismissed."
-            )
-        return cls(classification=classification, rationale=rationale)
-
-    @classmethod
-    def failed(cls, classification: HandoffClassification, error: BaseException) -> HandoffResult:
+    def failed(cls, error: BaseException) -> HandoffResult:
         """The record for a stage that threw before it could file.
 
         Without this the report simply has no `handoff` key, which is the shape
@@ -207,11 +163,13 @@ class HandoffResult(BaseModel):
         the issue this stage owed, because its escalation keys off the absent
         issue number rather than anything said here.
 
-        The classification is the derived one, not a placeholder: the read side
-        defaults an absent value to `none`, which would relabel a code-level
-        incident as nothing-to-do on the very report somebody triages.
+        It records `code_level` for the same reason an unanswered create call
+        does: the read side defaults an absent value to `none`, which would
+        relabel a code-level incident as nothing-to-do on the very report
+        somebody triages, and the classification is AE's to answer — a stage
+        that never reached AE has no answer to record.
         """
         return cls(
-            classification=classification,
+            classification=HandoffClassification.CODE_LEVEL,
             rationale=f"The handoff stage failed before it could file: {error}",
         )

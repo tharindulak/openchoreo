@@ -1,80 +1,73 @@
 # Copyright 2026 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Classification is read off the remediation agent's own statuses.
+"""Reading the classification back, now that AE derives it.
 
-The remediation agent already decided code-versus-config: `revised` means it
-expressed the action as a ReleaseBinding change, `suggested` means it could not.
-Nothing here re-decides that, and no model input reaches it — which is the whole
-point, because the model's veto over that upstream fact is what failed twice.
+What the remediation statuses MEAN moved to AE: it is the same rule AE's own
+escalation reads, and two derivations of one fact are two things that can
+disagree. This stage sends the statuses and records the answer, so what is left
+to test here is the read-back — the spelling boundary, and what gets recorded
+when there is no answer at all.
 """
 
-from src.models.handoff_result import HandoffClassification, HandoffResult
-from src.models.remediation_result import ActionStatus
+from src.agent.handoff_provider import HandoffProvider
+from src.models.handoff_result import (
+    HandoffClassification,
+    HandoffResult,
+    HandoffSummary,
+)
+
+PROVIDER = HandoffProvider(
+    create_issue_tool="ae_create_issue",
+    search_issues_tool="ae_search_related_issues",
+    header_project="X-AEP-Incident-Project",
+    header_component="X-AEP-Incident-Component",
+    header_signature="X-AEP-Incident-Signature",
+)
+
+SUMMARY = HandoffSummary(rationale="filed")
 
 
-def _actions(*statuses):
-    return [
-        {"description": f"action {i}", **({} if s is None else {"status": s})}
-        for i, s in enumerate(statuses)
-    ]
+def _compose(outcome: dict) -> HandoffClassification:
+    return HandoffResult.compose(SUMMARY, outcome, PROVIDER).classification
 
 
-def test_no_actions_is_nothing_to_hand_over():
-    assert HandoffClassification.derive([]) is HandoffClassification.NONE
+def test_every_classification_survives_the_spelling_boundary():
+    # AE spells them with hyphens, this enum with underscores. A value that
+    # failed to translate would land on the code_level default and look like a
+    # deliberate answer.
+    assert _compose({"classification": "code-level"}) is HandoffClassification.CODE_LEVEL
+    assert _compose({"classification": "config-level"}) is HandoffClassification.CONFIG_LEVEL
+    assert _compose({"classification": "mixed"}) is HandoffClassification.MIXED
+    assert _compose({"classification": "none"}) is HandoffClassification.NONE
 
 
-def test_everything_settled_without_config_is_nothing_to_hand_over():
-    actions = _actions(ActionStatus.APPLIED, ActionStatus.DISMISSED)
-    assert HandoffClassification.derive(actions) is HandoffClassification.NONE
-
-
-def test_everything_handled_by_configuration_is_config_level():
-    actions = _actions(ActionStatus.REVISED, ActionStatus.APPLIED)
-    assert HandoffClassification.derive(actions) is HandoffClassification.CONFIG_LEVEL
-
-
-def test_a_pending_action_beside_a_config_change_is_mixed():
-    actions = _actions(ActionStatus.SUGGESTED, ActionStatus.REVISED)
-    assert HandoffClassification.derive(actions) is HandoffClassification.MIXED
-
-
-def test_a_pending_action_alone_is_code_level():
-    actions = _actions(ActionStatus.SUGGESTED)
-    assert HandoffClassification.derive(actions) is HandoffClassification.CODE_LEVEL
-
-
-def test_an_absent_status_counts_as_pending():
-    """Remediation did not run, so nothing was triaged and no upstream
-    determination exists. The safe reading is that work remains — and the AE
-    backstop is blind to this case (it drops a status it does not recognise), so
-    this predicate is the only thing that files it."""
-    assert HandoffClassification.derive(_actions(None)) is HandoffClassification.CODE_LEVEL
-    assert (
-        HandoffClassification.derive(_actions(None, ActionStatus.REVISED))
-        is HandoffClassification.MIXED
+def test_the_answer_name_comes_from_the_descriptor():
+    provider = HandoffProvider(
+        create_issue_tool="tracker_file_defect",
+        search_issues_tool="tracker_find_defects",
+        header_project="X-Tracker-Project",
+        header_component="X-Tracker-Unit",
+        header_signature="X-Tracker-Signature",
+        answer_classification="workKind",
     )
+    record = HandoffResult.compose(SUMMARY, {"workKind": "config-level"}, provider)
+    assert record.classification is HandoffClassification.CONFIG_LEVEL
 
 
-def test_only_code_level_and_mixed_run_the_stage():
-    assert HandoffClassification.CODE_LEVEL.needs_stage is True
-    assert HandoffClassification.MIXED.needs_stage is True
-    assert HandoffClassification.CONFIG_LEVEL.needs_stage is False
-    assert HandoffClassification.NONE.needs_stage is False
+def test_an_unanswered_call_records_code_level():
+    # The stage threw, the model ended its turn without calling create, or the
+    # receiver said something unrecognised. The read side defaults an absent
+    # value to `none`, which would relabel a real code-level incident as
+    # nothing-to-do on the report somebody triages — so the safe direction is
+    # recorded instead.
+    assert _compose({}) is HandoffClassification.CODE_LEVEL
+    assert _compose({"classification": ""}) is HandoffClassification.CODE_LEVEL
+    assert _compose({"classification": "not-a-classification"}) is HandoffClassification.CODE_LEVEL
+    assert _compose({"classification": 7}) is HandoffClassification.CODE_LEVEL
 
 
-def test_the_skipped_result_says_which_kind_of_nothing_happened():
-    config = HandoffResult.without_handoff(
-        HandoffClassification.CONFIG_LEVEL, _actions(ActionStatus.REVISED)
-    )
-    assert config.classification is HandoffClassification.CONFIG_LEVEL
-    assert "configuration" in config.rationale
-    assert config.created_issue_number is None
-
-    empty = HandoffResult.without_handoff(HandoffClassification.NONE, [])
-    assert "no recommended actions" in empty.rationale
-
-    settled = HandoffResult.without_handoff(
-        HandoffClassification.NONE, _actions(ActionStatus.APPLIED)
-    )
-    assert "applied or dismissed" in settled.rationale
+def test_a_stage_that_threw_records_code_level_too():
+    record = HandoffResult.failed(RuntimeError("boom"))
+    assert record.classification is HandoffClassification.CODE_LEVEL
+    assert "boom" in record.rationale

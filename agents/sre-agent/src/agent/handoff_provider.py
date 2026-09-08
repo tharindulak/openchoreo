@@ -60,10 +60,16 @@ class HandoffProvider:
     header_component: str
     header_signature: str
 
-    # Answer names. Only these three carry meaning the agent acts on.
+    # Argument names for the values the CALLER'S PROCESS pins onto a call, as
+    # distinct from what its model decided. Forced by middleware, never asked of
+    # the model — see HandoffStatusesMiddleware.
+    arg_action_statuses: str = "actionStatuses"
+
+    # Answer names. Only these four carry meaning the agent acts on.
     answer_issue_number: str = "number"
     answer_issue_url: str = "url"
     answer_already_filed: str = "deduped"
+    answer_classification: str = "classification"
 
     # Everything else the receiver answers, carried through verbatim onto the
     # report as `provider_facts` and never interpreted here. That is the point:
@@ -126,6 +132,11 @@ def parse_provider(raw: dict[str, Any]) -> HandoffProvider:
             "handoff provider descriptor: 'incident_headers' object is required"
         )
     answers = raw.get("answer_fields") if isinstance(raw.get("answer_fields"), dict) else {}
+    # Optional with defaults on purpose: a descriptor written before these
+    # existed still parses, and the defaults are AEP's own names. Making them
+    # required would turn a rolling upgrade into a startup crash on the old
+    # ConfigMap.
+    arguments = raw.get("call_arguments") if isinstance(raw.get("call_arguments"), dict) else {}
 
     for key in _REQUIRED_TOOLS:
         _require_str(tools, key, "tools")
@@ -147,6 +158,8 @@ def parse_provider(raw: dict[str, Any]) -> HandoffProvider:
         answer_issue_number=answers.get("issue_number") or "number",
         answer_issue_url=answers.get("issue_url") or "url",
         answer_already_filed=answers.get("already_filed") or "deduped",
+        answer_classification=answers.get("classification") or "classification",
+        arg_action_statuses=arguments.get("action_statuses") or "actionStatuses",
         answer_facts=tuple(facts),
     )
 

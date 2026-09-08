@@ -41,10 +41,16 @@ def parse_tool_result(raw: Any) -> dict[str, Any]:
 class HandoffOutcomeMiddleware(AgentMiddleware):
     """Observe the create-issue tool and record its wire response."""
 
-    def __init__(self, provider: HandoffProvider, outcome: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        provider: HandoffProvider,
+        outcome: dict[str, Any],
+        action_statuses: list[str | None] | None = None,
+    ) -> None:
         super().__init__()
         self._provider = provider
         self._outcome = outcome
+        self._action_statuses = action_statuses
 
     async def awrap_tool_call(
         self,
@@ -53,6 +59,15 @@ class HandoffOutcomeMiddleware(AgentMiddleware):
     ) -> ToolMessage | Command:
         if request.tool_call.get("name") != self._provider.create_issue_tool:
             return await handler(request)
+        # Pinned here rather than asked of the model. The receiver derives the
+        # classification, the adoption and the dedupe namespace from these, so a
+        # status the model re-read off the report could move all three; the
+        # schema still shows the argument, and a value the model passes is
+        # overwritten.
+        if self._action_statuses is not None:
+            args = request.tool_call.setdefault("args", {})
+            if isinstance(args, dict):
+                args[self._provider.arg_action_statuses] = self._action_statuses
         self._outcome["called"] = True
         result = await handler(request)
         self._record(getattr(result, "content", None))

@@ -1,7 +1,8 @@
 # Copyright 2026 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""What the receiver ANSWERED, recorded from the wire."""
+"""Both directions of the create call: what the caller's process PINS onto it,
+and what the receiver ANSWERED, recorded from the wire."""
 
 import asyncio
 import json
@@ -78,3 +79,53 @@ def test_another_tool_is_left_alone():
     outcome: dict = {}
     _run(HandoffOutcomeMiddleware(PROVIDER, outcome), PROVIDER.search_issues_tool, json.dumps(ANSWER))
     assert outcome == {}
+
+
+def _run_capturing(middleware, name):
+    request = _Request(name)
+
+    async def handler(_request):
+        return ToolMessage(content=json.dumps(ANSWER), tool_call_id="call-1", name=name)
+
+    asyncio.run(middleware.awrap_tool_call(request, handler))
+    return request
+
+
+def test_the_action_statuses_are_pinned_onto_the_create_call():
+    # AE derives the classification, the adoption and the dedupe namespace from
+    # these, so a status the model re-read off the report could move all three.
+    # None survives as None: filtering it out would read as an action-free
+    # report, which is the opposite conclusion.
+    request = _run_capturing(
+        HandoffOutcomeMiddleware(PROVIDER, {}, ["suggested", None]), PROVIDER.create_issue_tool
+    )
+    assert request.tool_call["args"][PROVIDER.arg_action_statuses] == ["suggested", None]
+
+
+def test_a_status_the_model_passed_is_overwritten():
+    request = _Request(PROVIDER.create_issue_tool)
+    request.tool_call["args"][PROVIDER.arg_action_statuses] = ["revised"]
+
+    async def handler(_request):
+        return ToolMessage(
+            content=json.dumps(ANSWER), tool_call_id="call-1", name=PROVIDER.create_issue_tool
+        )
+
+    asyncio.run(
+        HandoffOutcomeMiddleware(PROVIDER, {}, ["suggested"]).awrap_tool_call(request, handler)
+    )
+    assert request.tool_call["args"][PROVIDER.arg_action_statuses] == ["suggested"]
+
+
+def test_the_search_call_is_left_alone():
+    request = _run_capturing(
+        HandoffOutcomeMiddleware(PROVIDER, {}, ["suggested"]), PROVIDER.search_issues_tool
+    )
+    assert request.tool_call["args"] == {}
+
+
+def test_no_statuses_means_no_argument_is_invented():
+    # A stage running without them must not move the receiver's adoption or its
+    # dedupe namespace on the strength of an empty list.
+    request = _run_capturing(HandoffOutcomeMiddleware(PROVIDER, {}), PROVIDER.create_issue_tool)
+    assert PROVIDER.arg_action_statuses not in request.tool_call["args"]
