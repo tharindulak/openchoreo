@@ -269,7 +269,7 @@ async def test_run_analysis_records_a_failed_handoff_on_the_report():
 
     handoff = backend.upsert_rca_report.await_args.kwargs["report"]["handoff"]
     assert handoff["classification"] == "code_level"
-    assert "Skill 'x' not found" in handoff["rationale"]
+    assert "Skill 'x' not found" in handoff["failure_reason"]
     assert handoff["created_issue_number"] is None
     assert handoff["deduped"] is False
 
@@ -375,3 +375,34 @@ def test_handoff_skills_returns_whatever_was_discovered():
     found = [Skill(name="coding-agent-handoff", description="d", content="c")]
     with patch("src.agent.agent.discover_skills", return_value=found):
         assert agent_module.handoff_skills() == found
+
+
+@pytest.mark.asyncio
+async def test_create_passes_response_format_none_through_with_no_strategy_wrapper():
+    # HANDOFF_AGENT runs with no structured output at all: the turn ends on
+    # the model's own final message, not a synthetic response-schema tool
+    # call. ToolStrategy/ProviderStrategy both require a real schema, so this
+    # path must skip constructing either rather than wrapping None in one.
+    captured = {}
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return fake_agent
+
+    agent_obj = _make_agent(tools=set(), response_format=None)
+
+    with (
+        patch("src.agent.agent.create_agent", fake_create_agent),
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+        patch("src.agent.agent.ToolStrategy") as tool_strategy_cls,
+        patch("src.agent.agent.ProviderStrategy") as provider_strategy_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH)
+
+    assert captured["response_format"] is None
+    tool_strategy_cls.assert_not_called()
+    provider_strategy_cls.assert_not_called()

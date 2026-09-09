@@ -23,7 +23,7 @@ REPORT = {
     "summary": "service1 timed out",
     "alert_context": {"project": "demohello", "component": "demohello-service1"},
     "result": {"root_causes": [{"summary": "service2 is slow", "confidence": "high"}]},
-    "handoff": {"classification": "code_level", "created_issue_number": 41, "adopted": True},
+    "handoff": {"classification": "code_level", "created_issue_number": 41},
 }
 
 

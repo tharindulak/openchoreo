@@ -45,7 +45,7 @@ from src.clients.sink import get_report_sink, should_publish_report
 from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
-from src.models import ChatResponse, HandoffResult, HandoffSummary, RCAReport
+from src.models import ChatResponse, HandoffResult, RCAReport
 from src.models.rca_report import RootCauseIdentified, handoff_view
 from src.models.remediation_result import RemediationResult
 from src.templates import render
@@ -60,7 +60,7 @@ class Agent:
         template: str,
         tools: set[str] | Callable[[], set[str]],
         middleware: list[type],
-        response_format: type[BaseModel],
+        response_format: type[BaseModel] | None,
         recursion_limit: int,
         use_summarization: bool = False,
         tool_factories: list[Callable[..., BaseTool]] | None = None,
@@ -144,14 +144,19 @@ class Agent:
 
         logging_mw = next((m for m in middleware if isinstance(m, LoggingMiddleware)), None)
 
-        # Anthropic and Gemini reject native strict structured output combined
-        # with many tools (grammar-too-large / unsupported response_mime_type),
-        # so use tool-based structured output for them. OpenAI keeps ProviderStrategy.
-        provider = settings.rca_model_name.split(":", 1)[0]
-        if provider in ("anthropic",):
-            output_strategy = ToolStrategy(self.response_format)
-        else:
-            output_strategy = ProviderStrategy(self.response_format)
+        # None means no structured output at all — the turn ends on the
+        # model's own final message rather than a synthetic response-schema
+        # tool call. Anthropic and Gemini reject native strict structured
+        # output combined with many tools (grammar-too-large / unsupported
+        # response_mime_type), so use tool-based structured output for them
+        # when there IS a schema; OpenAI keeps ProviderStrategy.
+        output_strategy = None
+        if self.response_format is not None:
+            provider = settings.rca_model_name.split(":", 1)[0]
+            if provider in ("anthropic",):
+                output_strategy = ToolStrategy(self.response_format)
+            else:
+                output_strategy = ProviderStrategy(self.response_format)
 
         agent = create_agent(
             model=model,
@@ -226,10 +231,10 @@ HANDOFF_AGENT = Agent(
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
     ],
-    # The model returns a SUMMARY of what it filed, not a decision. The
-    # classification is derived from remediation's statuses, so it is
-    # deliberately absent from this schema.
-    response_format=HandoffSummary,
+    # No structured output: the skill's only job is composing the issue via
+    # ae_create_issue, and everything else about the outcome — classification,
+    # adoption, dedupe — is AE's to answer, not the model's to restate.
+    response_format=None,
     recursion_limit=50,
     # Discovered by directory, not named: whatever is mounted under
     # EXTERNAL_SKILLS_DIR is in the catalog, so a second skill needs no code
@@ -502,15 +507,12 @@ async def run_analysis(
                     messages: list[dict[str, Any]] = [
                         {"role": "user", "content": json.dumps(handoff_view(report_data))}
                     ]
-                    handoff_result_raw = await asyncio.wait_for(
+                    await asyncio.wait_for(
                         handoff_agent.ainvoke({"messages": messages}),
                         timeout=settings.analysis_timeout_seconds,
                     )
-                    summary = handoff_result_raw["structured_response"]
 
-                    handoff_report = HandoffResult.compose(
-                        summary, handoff_outcome, provider
-                    )
+                    handoff_report = HandoffResult.compose(handoff_outcome, provider)
                     if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
                         logger.debug("Handoff tool calls: %s", summary_line)
                     report_data["handoff"] = handoff_report.model_dump()

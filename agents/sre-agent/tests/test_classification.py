@@ -11,11 +11,7 @@ when there is no answer at all.
 """
 
 from src.agent.handoff_provider import HandoffProvider
-from src.models.handoff_result import (
-    HandoffClassification,
-    HandoffResult,
-    HandoffSummary,
-)
+from src.models.rca_report import HandoffClassification, HandoffResult
 
 PROVIDER = HandoffProvider(
     create_issue_tool="ae_create_issue",
@@ -25,11 +21,9 @@ PROVIDER = HandoffProvider(
     header_signature="X-AEP-Incident-Signature",
 )
 
-SUMMARY = HandoffSummary(rationale="filed")
-
 
 def _compose(outcome: dict) -> HandoffClassification:
-    return HandoffResult.compose(SUMMARY, outcome, PROVIDER).classification
+    return HandoffResult.compose(outcome, PROVIDER).classification
 
 
 def test_every_classification_survives_the_spelling_boundary():
@@ -51,7 +45,7 @@ def test_the_answer_name_comes_from_the_descriptor():
         header_signature="X-Tracker-Signature",
         answer_classification="workKind",
     )
-    record = HandoffResult.compose(SUMMARY, {"workKind": "config-level"}, provider)
+    record = HandoffResult.compose({"workKind": "config-level"}, provider)
     assert record.classification is HandoffClassification.CONFIG_LEVEL
 
 
@@ -70,4 +64,4 @@ def test_an_unanswered_call_records_code_level():
 def test_a_stage_that_threw_records_code_level_too():
     record = HandoffResult.failed(RuntimeError("boom"))
     assert record.classification is HandoffClassification.CODE_LEVEL
-    assert "boom" in record.rationale
+    assert "boom" in record.failure_reason

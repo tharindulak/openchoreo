@@ -11,13 +11,12 @@ about a handoff that actually succeeded.
 """
 
 from src.agent.agent import _handoff_log_fields
-from src.models.handoff_result import HandoffClassification, HandoffResult
+from src.models.rca_report import HandoffClassification, HandoffResult
 
 
 def test_log_fields_come_from_the_result_and_its_carried_facts():
     result = HandoffResult(
         classification=HandoffClassification.CODE_LEVEL,
-        rationale="unbounded input exhausts the raised limit",
         created_issue_url="https://github.com/o/r/issues/7",
         provider_facts={"adopted": True, "recurrence": 2},
     )
@@ -32,10 +31,7 @@ def test_log_fields_come_from_the_result_and_its_carried_facts():
 
 
 def test_log_fields_survive_a_receiver_that_answered_nothing():
-    result = HandoffResult(
-        classification=HandoffClassification.NONE,
-        rationale="every remaining action was already applied",
-    )
+    result = HandoffResult(classification=HandoffClassification.NONE)
 
     classification, url, facts = _handoff_log_fields(result)
 
