@@ -13,7 +13,7 @@ import pytest
 
 import src.agent.agent as agent_module
 from src.agent.agent import Agent, run_analysis, stream_chat
-from src.agent.middleware import LoggingMiddleware
+from src.agent.middleware import LogCaptureMiddleware, LoggingMiddleware
 from src.helpers import AlertScope
 from src.models import RCAReport
 from src.models.remediation_result import ActionStatus
@@ -406,3 +406,40 @@ async def test_create_passes_response_format_none_through_with_no_strategy_wrapp
     assert captured["response_format"] is None
     tool_strategy_cls.assert_not_called()
     provider_strategy_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_appends_log_capture_middleware_when_context_asks_for_it():
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+    captured: list[dict] = []
+    agent_obj = _make_agent(tools=set())
+
+    with (
+        patch("src.agent.agent.create_agent", return_value=fake_agent) as create_agent_mock,
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH, context={"log_capture": captured})
+
+    middleware_instances = create_agent_mock.call_args.kwargs["middleware"]
+    assert any(isinstance(m, LogCaptureMiddleware) for m in middleware_instances)
+
+
+@pytest.mark.asyncio
+async def test_create_appends_no_log_capture_middleware_when_context_omits_it():
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+    agent_obj = _make_agent(tools=set())
+
+    with (
+        patch("src.agent.agent.create_agent", return_value=fake_agent) as create_agent_mock,
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH)
+
+    middleware_instances = create_agent_mock.call_args.kwargs["middleware"]
+    assert not any(isinstance(m, LogCaptureMiddleware) for m in middleware_instances)

@@ -26,6 +26,7 @@ from src.agent.fingerprint import error_fingerprint
 from src.agent.handoff_provider import load_provider
 from src.agent.middleware import (
     HandoffOutcomeMiddleware,
+    LogCaptureMiddleware,
     LoggingMiddleware,
     OutputTransformerMiddleware,
     ToolErrorHandlerMiddleware,
@@ -139,6 +140,12 @@ class Agent:
                         provider, outcome, context.get("handoff_action_statuses")
                     )
                 )
+        # Only the caller that asks for it gets logs captured — today that is
+        # run_analysis's RCA_AGENT call. CHAT_AGENT uses the same tool for an
+        # unrelated, ad-hoc conversation, and must not feed a fingerprint.
+        log_capture = context.get("log_capture") if context else None
+        if log_capture is not None:
+            middleware.append(LogCaptureMiddleware(log_capture))
         if self._use_summarization:
             middleware.append(SummarizationMiddleware(model=model, trigger=("fraction", 0.8)))
 
@@ -233,7 +240,6 @@ HANDOFF_AGENT = Agent(
     ],
     # No structured output: the skill's only job is composing the issue via
     # ae_create_issue, and everything else about the outcome — classification,
-    # adoption, dedupe — is AE's to answer, not the model's to restate.
     response_format=None,
     recursion_limit=50,
     # Discovered by directory, not named: whatever is mounted under
@@ -385,8 +391,15 @@ async def run_analysis(
         try:
             usage_callback = UsageMetadataCallbackHandler()
 
+            # Populated by LogCaptureMiddleware as the RCA stage queries logs —
+            # code-observed, read back after the run so the dedupe fingerprint
+            # is built from what the observability plane actually returned,
+            # not from whichever lines the model chose to cite afterward.
+            raw_log_lines: list[dict[str, Any]] = []
             rca_agent, rca_logging = await RCA_AGENT.create(
-                auth=get_oauth2_auth(), usage_callback=usage_callback
+                auth=get_oauth2_auth(),
+                usage_callback=usage_callback,
+                context={"log_capture": raw_log_lines},
             )
 
             content = render(
@@ -495,7 +508,7 @@ async def run_analysis(
                             "handoff_headers": provider.incident_headers(
                                 scope.project,
                                 scope.component,
-                                error_fingerprint(report_data),
+                                error_fingerprint(report_data, raw_log_lines),
                             ),
                         },
                     )

@@ -11,12 +11,16 @@ lets distinct root causes each get their own issue while identical recurrences
 still dedupe.
 
 The fingerprint MUST be deterministic: the same underlying error has to hash to
-the same value across runs. We therefore derive it from the raw error log lines
-(normalised to a template), never from the LLM's free-text root-cause summary,
-which varies run to run and would defeat dedup. Normalisation masks the
-per-occurrence noise (timestamps, ids, numbers, durations) so repeated
-occurrences of one error collapse to a single template while genuinely
-different errors keep distinct templates.
+the same value across runs. It is derived from the RAW log entries
+``query_component_logs`` returned during the RCA run (captured verbatim by
+``LogCaptureMiddleware``), never from the model's own structured findings —
+measured live, the same defect triggered three times produced three different
+fingerprints, because which lines the model chose to cite in
+``supporting_findings[].evidence`` varies run to run the way any model output
+does, even though the observability plane returned the same lines each time.
+Normalisation masks the per-occurrence noise (timestamps, ids, numbers,
+durations) so repeated occurrences of one error collapse to a single template
+while genuinely different errors keep distinct templates.
 """
 
 import hashlib
@@ -73,31 +77,39 @@ def normalize_log_line(line: str) -> str:
     return s.strip()
 
 
-def _collect_error_log_lines(report_data: dict[str, Any]) -> list[str]:
-    """Pull log-evidence lines from the RCA report, preferring ERROR level.
+def _error_lines(raw_log_lines: list[dict[str, Any]]) -> list[str]:
+    """Lines matching what the alert rule itself watches for.
 
-    Walks ``result.root_causes[].supporting_findings[].evidence`` for evidence
-    of ``type == "log"``. Returns ERROR-level lines when any exist, otherwise
-    every log line found (so a report that only carried WARN/INFO evidence still
-    yields a signature rather than falling through to the alert fallback).
+    The rule matches a substring of the RAW pod log line, ``error``,
+    case-insensitively, with no severity filter — a WARN line containing the
+    word fires it, an ERROR line that does not contain it never does. The
+    observability plane hands this stage that raw line already split into
+    `level` and `log` (message), so reproducing the rule's match means
+    checking BOTH: `level=ERROR` is itself literal text in the line the rule
+    saw, and is normally where "error" comes from — measured on this
+    project's own verified defect, whose message text
+    ("failed to compute ageInDays for catalog item") carries no "error"
+    substring anywhere, only `level=ERROR` does. The reverse also happens: an
+    unrouted-path line has no severity of its own but says "error:" in the
+    message. Checking only one field misses one of the two real cases this
+    project has already produced.
+
+    Falls back to every captured line when nothing matches, so a report whose
+    evidence used a different watched token still yields a signature rather
+    than nothing at all.
     """
-    error_lines: list[str] = []
-    other_lines: list[str] = []
-    result = report_data.get("result") or {}
-    for root_cause in result.get("root_causes") or []:
-        for finding in root_cause.get("supporting_findings") or []:
-            evidence = finding.get("evidence") or {}
-            if evidence.get("type") != "log":
-                continue
-            for log_line in evidence.get("log_lines") or []:
-                message = str(log_line.get("log") or "").strip()
-                if not message:
-                    continue
-                if str(log_line.get("level") or "").upper() == "ERROR":
-                    error_lines.append(message)
-                else:
-                    other_lines.append(message)
-    return error_lines or other_lines
+    matched: list[str] = []
+    other: list[str] = []
+    for entry in raw_log_lines:
+        message = str(entry.get("log") or "").strip()
+        if not message:
+            continue
+        level = str(entry.get("level") or "")
+        if "error" in message.lower() or "error" in level.lower():
+            matched.append(message)
+        else:
+            other.append(message)
+    return matched or other
 
 
 def _alert_signature(report_data: dict[str, Any]) -> str:
@@ -116,30 +128,35 @@ def _alert_signature(report_data: dict[str, Any]) -> str:
     return "|".join(part for part in parts if part)
 
 
-def error_fingerprint(report_data: dict[str, Any] | None) -> str | None:
+def error_fingerprint(
+    report_data: dict[str, Any] | None,
+    raw_log_lines: list[dict[str, Any]] | None = None,
+) -> str | None:
     """Return a short, deterministic fingerprint of the incident's root cause.
 
-    Primary source is the dominant normalised ERROR log template; falls back to
-    the alert's source signature for metric/trace alerts. Returns ``None`` when
-    there is nothing to fingerprint — the caller then uses the component-only key
-    (preserving the previous behaviour for that incident rather than filing an
-    unkeyed issue).
+    Primary source is the dominant normalised template among the RAW log lines
+    `query_component_logs` returned during this run — code-observed, not
+    model-curated. Falls back to the alert's source signature (from
+    `report_data`) when nothing was ever captured, e.g. a metric/trace alert
+    whose RCA never queried logs at all. Returns ``None`` when there is
+    nothing to fingerprint either way — the caller then uses the
+    component-only key (preserving the previous behaviour for that incident
+    rather than filing an unkeyed issue).
     """
-    if not report_data:
-        return None
-
-    lines = _collect_error_log_lines(report_data)
+    lines = _error_lines(raw_log_lines or [])
     if lines:
         templates = [t for t in (normalize_log_line(line) for line in lines) if t]
         if not templates:
             return None
-        # Pick the dominant template; break ties lexicographically so the choice
-        # is independent of the order the LLM happened to list the lines in.
+        # Pick the dominant template; break ties lexicographically so the
+        # choice is independent of the order the raw entries arrived in.
         counts = Counter(templates)
         top = max(counts.values())
         template = min(t for t, count in counts.items() if count == top)
-    else:
+    elif report_data:
         template = normalize_log_line(_alert_signature(report_data))
+    else:
+        return None
 
     if not template:
         return None

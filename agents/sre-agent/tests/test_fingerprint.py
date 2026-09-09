@@ -1,35 +1,22 @@
 # Copyright 2026 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the deterministic error fingerprint used by the handoff dedupe key."""
+"""Tests for the deterministic error fingerprint used by the handoff dedupe key.
 
-from src.agent.fingerprint import (
-    error_fingerprint,
-    normalize_log_line,
-)
+The source is the RAW log entries `query_component_logs` returned during the
+RCA run — what `LogCaptureMiddleware` captures — never the model's own
+structured findings. That distinction is the point: the model's citation of
+which lines matter varies run to run even for the identical underlying error,
+which is what made two triggers of one bug dedupe as if they were different
+bugs before this fix.
+"""
+
+from src.agent.fingerprint import error_fingerprint, normalize_log_line
 
 
-def _log_report(*lines: tuple[str, str], source_type: str = "log") -> dict:
-    """Build a minimal RCA report dict carrying the given (level, message) log
-    lines as evidence under one root cause."""
-    return {
-        "alert_context": {"source_type": source_type, "source_query": "error"},
-        "result": {
-            "type": "root_cause_identified",
-            "root_causes": [
-                {
-                    "supporting_findings": [
-                        {
-                            "evidence": {
-                                "type": "log",
-                                "log_lines": [{"level": lvl, "log": msg} for lvl, msg in lines],
-                            }
-                        }
-                    ]
-                }
-            ],
-        },
-    }
+def _lines(*pairs: tuple[str, str]) -> list[dict]:
+    """Raw log entries as LogCaptureMiddleware captures them: level + log."""
+    return [{"level": level, "log": message} for level, message in pairs]
 
 
 def test_normalize_masks_volatile_tokens():
@@ -44,44 +31,90 @@ def test_normalize_masks_volatile_tokens():
 
 
 def test_same_root_cause_same_fingerprint():
-    # Same error, different request ids / durations → identical fingerprint.
-    r1 = _log_report(("ERROR", "req-1 timeout waiting for service2 after 8000ms"))
-    r2 = _log_report(("ERROR", "req-2 timeout waiting for service2 after 8123ms"))
-    assert error_fingerprint(r1) == error_fingerprint(r2)
+    # Same error, different request ids / durations -> identical fingerprint.
+    r1 = _lines(("ERROR", "req-1 timeout waiting for service2 after 8000ms"))
+    r2 = _lines(("ERROR", "req-2 timeout waiting for service2 after 8123ms"))
+    assert error_fingerprint(None, r1) == error_fingerprint(None, r2)
 
 
 def test_different_root_cause_different_fingerprint():
-    r1 = _log_report(("ERROR", "timeout waiting for service2 after 8000ms"))
-    r2 = _log_report(("ERROR", "nil pointer dereference in handler.go"))
-    assert error_fingerprint(r1) != error_fingerprint(r2)
+    r1 = _lines(("ERROR", "timeout waiting for service2 after 8000ms"))
+    r2 = _lines(("ERROR", "nil pointer dereference in handler.go"))
+    assert error_fingerprint(None, r1) != error_fingerprint(None, r2)
 
 
-def test_error_lines_preferred_over_lower_levels():
-    # The ERROR line drives the fingerprint even when INFO/WARN lines are present.
-    with_noise = _log_report(
-        ("INFO", "starting request 12"),
-        ("ERROR", "timeout waiting for service2 after 8000ms"),
-        ("WARN", "retrying in 500ms"),
+def test_deterministic_regardless_of_which_lines_a_run_happened_to_capture():
+    # The bug this fixes: two runs of ONE underlying error used to fingerprint
+    # differently because the model cited a different subset of what it saw.
+    # The fix removes the model from this path entirely, so the property to
+    # prove is that varying which OTHER lines came along for the ride, and in
+    # what order, does not move the fingerprint — only the dominant error
+    # template does. Mirrors this project's own verified defect: the message
+    # text itself names no "error", only the level does.
+    run_a = _lines(
+        ("INFO", "handling request 41"),
+        ("ERROR", "failed to compute ageInDays for catalog item"),
     )
-    only_error = _log_report(("ERROR", "timeout waiting for service2 after 9999ms"))
-    assert error_fingerprint(with_noise) == error_fingerprint(only_error)
+    run_b = _lines(
+        ("ERROR", "failed to compute ageInDays for catalog item"),
+        ("INFO", "handling request 57"),
+        ("DEBUG", "cache miss for key foo"),
+    )
+    assert error_fingerprint(None, run_a) == error_fingerprint(None, run_b)
+
+
+def test_matches_on_either_the_level_or_the_message_text():
+    # Two real cases this project has produced, both covered:
+    #
+    # (1) The message names no "error" — only level=ERROR does (this
+    #     project's own verified defect: "failed to compute ageInDays").
+    #     Checking level catches it regardless of what the message says.
+    only_level_says_error = _lines(
+        ("ERROR", "failed to compute ageInDays for catalog item"),
+        ("INFO", "handled catalog-items request"),
+    )
+    same_message_different_level_label = _lines(
+        ("SEVERE", "failed to compute ageInDays for catalog item"),
+    )
+    assert error_fingerprint(None, only_level_says_error) == error_fingerprint(
+        None, same_message_different_level_label
+    )
+
+    # (2) The message says "error:" but the line has no severity of its own
+    #     (a framework-default unrouted-path line). Checking the message text
+    #     catches it even though `level` carries nothing.
+    unrouted_path_line = _lines(
+        ("", "error: no matching resource found for path : / , method : GET"),
+    )
+    assert error_fingerprint(None, unrouted_path_line) is not None
+
+
+def test_falls_back_to_every_line_when_none_match_the_watched_token():
+    with_noise = _lines(
+        ("INFO", "starting request 12"),
+        ("DEBUG", "retrying in 500ms"),
+    )
+    assert error_fingerprint(None, with_noise) is not None
 
 
 def test_dominant_template_is_order_independent():
-    r1 = _log_report(
+    r1 = _lines(
         ("ERROR", "connection refused to db at 10.0.0.5:5432"),
         ("ERROR", "connection refused to db at 10.0.0.9:5432"),
         ("ERROR", "one-off blip 1"),
     )
-    r2 = _log_report(
+    r2 = _lines(
         ("ERROR", "one-off blip 2"),
         ("ERROR", "connection refused to db at 10.0.0.1:5432"),
         ("ERROR", "connection refused to db at 10.0.0.2:5432"),
     )
-    assert error_fingerprint(r1) == error_fingerprint(r2)
+    assert error_fingerprint(None, r1) == error_fingerprint(None, r2)
 
 
-def test_metric_alert_fallback():
+def test_metric_alert_fallback_when_nothing_was_ever_captured():
+    # A metric/trace alert whose RCA never called query_component_logs at
+    # all — no raw lines exist to fingerprint from, so the alert's own
+    # source identity is what's left.
     metric = {
         "alert_context": {
             "source_type": "metric",
@@ -98,11 +131,12 @@ def test_metric_alert_fallback():
         },
         "result": {"type": "root_cause_identified", "root_causes": []},
     }
-    fp_cpu = error_fingerprint(metric)
+    fp_cpu = error_fingerprint(metric, None)
     assert fp_cpu is not None
-    assert fp_cpu != error_fingerprint(other)
+    assert fp_cpu != error_fingerprint(other, None)
 
 
-def test_empty_report_returns_none():
-    assert error_fingerprint(None) is None
-    assert error_fingerprint({}) is None
+def test_empty_report_and_no_lines_returns_none():
+    assert error_fingerprint(None, None) is None
+    assert error_fingerprint({}, None) is None
+    assert error_fingerprint({}, []) is None
