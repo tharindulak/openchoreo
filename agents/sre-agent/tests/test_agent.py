@@ -272,3 +272,106 @@ async def test_run_analysis_records_a_failed_handoff_on_the_report():
     assert "Skill 'x' not found" in handoff["rationale"]
     assert handoff["created_issue_number"] is None
     assert handoff["deduped"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_resolves_a_callable_skills_catalog_fresh_per_call():
+    # Discovery, not a literal set: the catalog comes from calling the
+    # function, mirroring how `tools=lambda: load_provider().tools` already
+    # resolves per request rather than at construction time.
+    captured = {}
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return fake_agent
+
+    from src.agent.skills import Skill
+
+    provided = [Skill(name="coding-agent-handoff", description="d", content="body")]
+    agent_obj = _make_agent(tools=set(), skills=lambda: provided)
+
+    with (
+        patch("src.agent.agent.create_agent", fake_create_agent),
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH)
+
+    tool_names = [t.name for t in captured["tools"]]
+    assert "load_skill" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_create_appends_no_load_skill_tool_when_the_catalog_is_empty():
+    captured = {}
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return fake_agent
+
+    agent_obj = _make_agent(tools=set(), skills=lambda: [])
+
+    with (
+        patch("src.agent.agent.create_agent", fake_create_agent),
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH)
+
+    assert "load_skill" not in [t.name for t in captured["tools"]]
+
+
+@pytest.mark.asyncio
+async def test_create_still_accepts_a_literal_skill_name_set():
+    # The set[str] path (load_skills by name) stays available for an agent
+    # that wants exactly one named skill, not directory discovery.
+    captured = {}
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+
+    def fake_create_agent(**kwargs):
+        captured.update(kwargs)
+        return fake_agent
+
+    from src.agent.skills import Skill
+
+    agent_obj = _make_agent(tools=set(), skills={"coding-agent-handoff"})
+
+    with (
+        patch("src.agent.agent.create_agent", fake_create_agent),
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+        patch(
+            "src.agent.agent.load_skills",
+            return_value=[Skill(name="coding-agent-handoff", description="d", content="c")],
+        ) as load_skills_mock,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH)
+
+    load_skills_mock.assert_called_once_with({"coding-agent-handoff"})
+    assert "load_skill" in [t.name for t in captured["tools"]]
+
+
+def test_handoff_skills_raises_on_an_empty_catalog():
+    # The stage's whole playbook is a mounted skill; an empty or unreadable
+    # mount is a startup-shaped problem, not a quiet handoff with no skill.
+    with (
+        patch("src.agent.agent.discover_skills", return_value=[]),
+        pytest.raises(FileNotFoundError, match="EXTERNAL_SKILLS_DIR"),
+    ):
+        agent_module.handoff_skills()
+
+
+def test_handoff_skills_returns_whatever_was_discovered():
+    from src.agent.skills import Skill
+
+    found = [Skill(name="coding-agent-handoff", description="d", content="c")]
+    with patch("src.agent.agent.discover_skills", return_value=found):
+        assert agent_module.handoff_skills() == found

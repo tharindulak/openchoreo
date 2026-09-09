@@ -96,6 +96,55 @@ def load_skills(names: set[str], search_dirs: list[Path] | None = None) -> list[
     return [load_skill(name, roots) for name in sorted(names)]
 
 
+def discover_skills(search_dirs: list[Path] | None = None) -> list[Skill]:
+    """Every skill mounted under the skill roots, found by directory rather
+    than named up front.
+
+    Resolved fresh on every call, the same way `tools=lambda:
+    load_provider().tools` already is — a skill mounted alongside an existing
+    one (a new ConfigMap + volume, no image rebuild) reaches the catalog on
+    the agent's next request. A skill's CONTENT already worked this way
+    (`load_skill` is a plain file read); this is the same treatment for which
+    NAMES exist.
+
+    A bad entry does not fail the whole catalog. `load_skill`/`load_skills`
+    still raise for a single NAMED skill an agent declares outright — that
+    stays loud, because that skill is the only one the stage has and a missing
+    or malformed copy of it is a startup-shaped problem. Discovery is
+    different: once a directory can hold more than one skill, one
+    contributor's broken `SKILL.md` must not disable everyone else's. A
+    directory with no `SKILL.md` is simply not a skill — a folder of assets
+    for humans, say — and is skipped without comment; a directory that HAS one
+    but fails to parse is loud (a warning naming the path and the error) and
+    excluded rather than aborting discovery.
+
+    Roots are walked in `load_skill`'s own precedence: a name already claimed
+    by an earlier root is not reconsidered from a later one.
+    """
+    roots = search_dirs if search_dirs is not None else _search_dirs()
+    found: dict[str, Skill] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() or entry.name in found:
+                continue
+            skill_file = entry / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            try:
+                name, description, content = _parse_skill_md(skill_file.read_text())
+                if name != entry.name:
+                    raise ValueError(
+                        f"{skill_file} declares name={name!r}, expected {entry.name!r}"
+                    )
+            except (OSError, ValueError) as e:
+                logger.warning("Skipping malformed skill at %s: %s", skill_file, e)
+                continue
+            found[entry.name] = Skill(name=name, description=description, content=content)
+    return [found[name] for name in sorted(found)]
+
+
 class _LoadSkillInput(BaseModel):
     name: str = Field(..., description="Name of the skill to load, from the catalog above")
 

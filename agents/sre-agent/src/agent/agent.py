@@ -30,7 +30,7 @@ from src.agent.middleware import (
     OutputTransformerMiddleware,
     ToolErrorHandlerMiddleware,
 )
-from src.agent.skills import create_load_skill_tool, load_skills
+from src.agent.skills import Skill, create_load_skill_tool, discover_skills, load_skills
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
     ALL_TOOL_FACTORIES,
@@ -64,7 +64,7 @@ class Agent:
         recursion_limit: int,
         use_summarization: bool = False,
         tool_factories: list[Callable[..., BaseTool]] | None = None,
-        skills: set[str] | None = None,
+        skills: set[str] | Callable[[], list[Skill]] | None = None,
     ):
         self.template = template
         self.tools = tools
@@ -103,9 +103,16 @@ class Agent:
             tools.append(factory(auth))
 
         provider = context.get("handoff_provider") if context else None
-        skills_catalog = []
-        if self._skills:
+        # A callable discovers by directory (whatever's mounted, resolved
+        # fresh); a literal set names skills up front and raises if one is
+        # missing. Both produce the same shape, a catalog of Skill objects.
+        if callable(self._skills):
+            skills_catalog = self._skills()
+        elif self._skills:
             skills_catalog = load_skills(self._skills)
+        else:
+            skills_catalog = []
+        if skills_catalog:
             tools.append(create_load_skill_tool(skills_catalog))
 
         logger.debug("Total tools: %d — %s", len(tools), [t.name for t in tools])
@@ -195,6 +202,21 @@ REMED_AGENT = Agent(
     recursion_limit=50,
 )
 
+
+def handoff_skills() -> list[Skill]:
+    """The handoff stage's skill catalog: whatever is mounted, discovered
+    fresh per request. Empty is fatal, matching the single-named-skill case
+    this replaced — the stage has no playbook without at least one."""
+    skills = discover_skills()
+    if not skills:
+        raise FileNotFoundError(
+            "No skill found under EXTERNAL_SKILLS_DIR "
+            f"({settings.external_skills_dir!r}). The handoff stage's whole "
+            "playbook is a mounted skill; see deploy-time skill mounting docs."
+        )
+    return skills
+
+
 HANDOFF_AGENT = Agent(
     template="prompts/handoff_agent_prompt.j2",
     # Callable, not a literal: which tools exist is the receiving platform's
@@ -209,7 +231,14 @@ HANDOFF_AGENT = Agent(
     # deliberately absent from this schema.
     response_format=HandoffSummary,
     recursion_limit=50,
-    skills={"coding-agent-handoff"},
+    # Discovered by directory, not named: whatever is mounted under
+    # EXTERNAL_SKILLS_DIR is in the catalog, so a second skill needs no code
+    # change here — only a ConfigMap + volume. Fatal on zero found: this
+    # stage's entire playbook IS a mounted skill, and the config validator
+    # already refuses to start without EXTERNAL_SKILLS_DIR set at all — an
+    # empty or unreadable mount deserves the same loud failure, not a quiet
+    # handoff run with no skill loaded.
+    skills=handoff_skills,
 )
 
 CHAT_AGENT = Agent(

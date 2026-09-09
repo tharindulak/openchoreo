@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 from src.agent import skills as skills_mod
-from src.agent.skills import load_skill, load_skills
+from src.agent.skills import discover_skills, load_skill, load_skills
 from src.config import settings
 
 _SKILL_MD = """---
@@ -99,3 +99,68 @@ def test_load_skills_sorted():
         _write_skill(root_p, "aardvark")
         result = load_skills({"coding-agent-handoff", "aardvark"}, [root_p])
         assert [s.name for s in result] == ["aardvark", "coding-agent-handoff"], result
+
+
+def test_discover_finds_every_mounted_skill():
+    with tempfile.TemporaryDirectory() as root:
+        root_p = Path(root)
+        _write_skill(root_p, "coding-agent-handoff")
+        _write_skill(root_p, "aardvark")
+        result = discover_skills([root_p])
+        assert [s.name for s in result] == ["aardvark", "coding-agent-handoff"], result
+
+
+def test_discover_ignores_a_directory_with_no_skill_md():
+    with tempfile.TemporaryDirectory() as root:
+        root_p = Path(root)
+        _write_skill(root_p, "coding-agent-handoff")
+        (root_p / "diagrams").mkdir()  # a human-facing asset folder, not a skill
+        (root_p / "diagrams" / "flow.png").write_bytes(b"not a skill")
+        result = discover_skills([root_p])
+        assert [s.name for s in result] == ["coding-agent-handoff"], result
+
+
+def test_discover_skips_a_malformed_skill_without_failing_the_rest():
+    # One contributor's broken SKILL.md must not disable everyone else's —
+    # unlike load_skill/load_skills, which still raise for a single NAMED
+    # skill a stage declares outright.
+    with tempfile.TemporaryDirectory() as root:
+        root_p = Path(root)
+        _write_skill(root_p, "coding-agent-handoff")
+        broken = root_p / "broken-skill"
+        broken.mkdir()
+        (broken / "SKILL.md").write_text("not frontmatter at all")
+        result = discover_skills([root_p])
+        assert [s.name for s in result] == ["coding-agent-handoff"], result
+
+
+def test_discover_skips_a_name_mismatch_the_same_way():
+    with tempfile.TemporaryDirectory() as root:
+        root_p = Path(root)
+        _write_skill(root_p, "coding-agent-handoff")
+        mismatched = root_p / "mismatched"
+        mismatched.mkdir()
+        (mismatched / "SKILL.md").write_text(_SKILL_MD.format(name="other", desc="x"))
+        result = discover_skills([root_p])
+        assert [s.name for s in result] == ["coding-agent-handoff"], result
+
+
+def test_discover_root_precedence_matches_load_skill():
+    with tempfile.TemporaryDirectory() as ext, tempfile.TemporaryDirectory() as builtin:
+        ext_p, builtin_p = Path(ext), Path(builtin)
+        _write_skill(ext_p, "coding-agent-handoff", "from-external")
+        _write_skill(builtin_p, "coding-agent-handoff", "from-builtin")
+        _write_skill(builtin_p, "aardvark", "builtin-only")
+        result = discover_skills([ext_p, builtin_p])
+        by_name = {s.name: s for s in result}
+        assert by_name["coding-agent-handoff"].description == "from-external"
+        assert by_name["aardvark"].description == "builtin-only"
+
+
+def test_discover_empty_directory_is_not_an_error():
+    with tempfile.TemporaryDirectory() as root:
+        assert discover_skills([Path(root)]) == []
+
+
+def test_discover_missing_directory_is_not_an_error():
+    assert discover_skills([Path("/does/not/exist")]) == []
