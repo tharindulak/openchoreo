@@ -107,3 +107,22 @@ def test_handoff_header_map_parses_from_a_json_env_string():
 def test_a_malformed_header_map_is_refused_at_startup():
     with pytest.raises(ValueError):
         Settings(handoff_header_map="not json")
+
+
+def test_empty_handoff_header_map_env_var_does_not_crash(monkeypatch):
+    # EnvSettingsSource must not crash on HANDOFF_HEADER_MAP="" — it should
+    # delegate to the validator which converts empty string to {} without
+    # attempting to decode it as JSON. This is critical for unconfigured
+    # deployments where a ConfigMap default is an empty string.
+    monkeypatch.setenv("HANDOFF_HEADER_MAP", "")
+    s = Settings()
+    assert s.handoff_header_map == {}
+
+
+def test_handoff_header_map_parses_valid_json_from_env_var(monkeypatch):
+    # When HANDOFF_HEADER_MAP is set to a valid JSON object string in the
+    # environment (the standard ConfigMap pattern), pydantic_settings should
+    # hand the raw string to the validator, which parses it to a dict.
+    monkeypatch.setenv("HANDOFF_HEADER_MAP", '{"project": "X-AEP-Project"}')
+    s = Settings()
+    assert s.handoff_header_map == {"project": "X-AEP-Project"}

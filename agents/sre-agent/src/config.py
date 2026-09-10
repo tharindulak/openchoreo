@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import SettingsConfigDict
+from pydantic_settings import NoDecode, SettingsConfigDict
 
 from common.config import CommonSettings
 
@@ -114,7 +115,7 @@ class Settings(CommonSettings):
     # deploy-time config, set by whoever operates this agent alongside a
     # specific receiver. This agent never spells a receiver's header name
     # itself — see src/agent/handoff_headers.py.
-    handoff_header_map: dict[str, str] = Field(default_factory=dict)
+    handoff_header_map: Annotated[dict[str, str], NoDecode] = Field(default_factory=dict)
 
     @field_validator("handoff_header_map", mode="before")
     @classmethod
