@@ -104,16 +104,24 @@ def test_an_unknown_sink_fails_loudly(monkeypatch):
 def test_a_deduped_handoff_is_not_published_twice():
     """The creating run already published this incident, and its row carries the
     live dispatch state. A second row would read as unworked while a coding
-    agent is on it."""
-    publish, reason = should_publish_report({"handoff": {"deduped": True}})
+    agent is on it. `deduped` is read out of the handoff's raw, uninterpreted
+    result — not off the handoff dict directly."""
+    report = {"handoff": {"tool": "ae_create_issue", "result": {"deduped": True}}}
+    publish, reason = should_publish_report(report)
     assert publish is False
     assert "deduped" in reason
 
 
 def test_everything_else_publishes_including_a_decline():
     """A decline is exactly what somebody wants to read when wondering why no
-    issue was filed, so it must not be withheld."""
-    for handoff in ({}, {"deduped": False}, {"classification": "none", "rationale": "no defect"}):
-        publish, reason = should_publish_report({"handoff": handoff})
-        assert publish is True, handoff
-        assert reason == ""
+    issue was filed, so it must not be withheld. Nor is a handoff whose last
+    call answered something other than a dict — e.g. the stage never reached
+    create_issue because its last call was ae_search_related_issues (a list
+    answer) — that is not a dedupe."""
+    reports = (
+        {},
+        {"handoff": {"tool": "ae_create_issue", "result": {"deduped": False}}},
+        {"handoff": {"tool": "ae_search_related_issues", "result": [{"number": 1}]}},
+    )
+    for report in reports:
+        assert should_publish_report(report) == (True, ""), report

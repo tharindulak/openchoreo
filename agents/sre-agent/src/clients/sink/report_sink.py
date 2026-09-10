@@ -39,22 +39,20 @@ logger = logging.getLogger(__name__)
 def should_publish_report(report_data: dict[str, Any]) -> tuple[bool, str]:
     """Whether a completed report should reach a downstream sink.
 
-    One rule, and it exists because a duplicate row is worse than a missing one.
-    A handoff that **deduped** folded this incident onto an issue an earlier run
-    already filed — and that earlier run already published its own report. A
-    second publish would add a row whose dispatch state reads false while the
-    authoritative row's is live, so a human triaging would see the incident as
-    unworked when a coding agent is on it.
+    One rule, and it exists because a duplicate row is worse than a missing
+    one. A handoff that **deduped** folded this incident onto an issue an
+    earlier run already filed — and that earlier run already published its
+    own report. `deduped` is read out of the handoff's raw, uninterpreted
+    result: this function does not know or assume which tool produced it, only
+    that a truthy `deduped` key in whatever the last call answered means this
+    incident was already reported.
 
-    Everything else publishes, including a decline: a report saying "no code
-    change is needed, and here is why per action" is exactly what somebody needs
-    when they are wondering why nothing was filed.
-
-    Returns ``(publish, reason)``; ``reason`` is a human-readable skip cause and
-    is empty when publishing.
+    Returns ``(publish, reason)``; ``reason`` is a human-readable skip cause
+    and is empty when publishing.
     """
     handoff = report_data.get("handoff") or {}
-    if handoff.get("deduped"):
+    result = handoff.get("result")
+    if isinstance(result, dict) and result.get("deduped"):
         return (
             False,
             "handoff deduped onto an existing issue (already reported by its creating run)",

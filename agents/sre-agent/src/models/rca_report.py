@@ -8,139 +8,49 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Discriminator, Field
 
-from src.models.remediation_result import ActionStatus
-
-
-class HandoffClassification(StrEnum):
-    """Whether the fix requires a config change, a code change, or both"""
-
-    CONFIG_LEVEL = "config_level"
-    CODE_LEVEL = "code_level"
-    MIXED = "mixed"
-    NONE = "none"
-
 
 class HandoffResult(BaseModel):
-    """The persisted record of the handoff — what the receiver answered, plus
-    why the stage failed when it never reached the receiver at all.
+    """The persisted record of the handoff stage's last tool call.
 
-    The skill's whole job is composing the issue (title, body, labels) via
-    `ae_create_issue`; nothing here restates or summarises that. Classification
-    is read back from what AE derived off remediation's statuses, never
-    computed by the model. The issue number, url and `deduped` are stamped
-    from what the receiver answered.
-
-    Everything ELSE the receiver said lands in `provider_facts`, untyped and
-    uninterpreted. That is deliberate: those fields belong to whatever system
-    received the handoff, this agent cannot verify them, and giving them typed
-    homes here meant the record could only ever describe one receiver.
+    Fully generic on purpose: which tool answered, and what it answered,
+    carried verbatim. What any of it MEANS — classification, dedupe, adoption
+    — belongs to whatever platform received the call; typing those fields
+    here would mean this record could only ever describe one receiver.
     """
 
-    classification: HandoffClassification = Field(
-        ...,
-        description=(
-            "Whether the identified fix is config-level, code-level, mixed, or none. "
-            "Derived, never restated by the model"
-        ),
+    tool: str | None = Field(
+        default=None,
+        description="Name of the last tool call the stage made, or None if it made none",
+    )
+    result: Any = Field(
+        default=None,
+        description="That call's parsed result, carried verbatim and never interpreted here",
     )
     failure_reason: str | None = Field(
         default=None,
         description=(
             "Why the handoff stage failed before it could file, when it did. Set only by "
-            "`failed()` — absent on a successful filing, because the issue itself is the "
-            "record of what happened"
-        ),
-    )
-    deduped: bool = Field(
-        default=False,
-        description=(
-            "True when the create call folded onto an issue that already existed rather "
-            "than filing a new one. Kept as a first-class field because the agent ACTS on "
-            "it — a deduped handoff is not published downstream, since the run that "
-            "created the issue already reported this incident"
-        ),
-    )
-    created_issue_number: int | None = Field(
-        default=None, description="Number of the GitHub issue created for the code-level fix"
-    )
-    created_issue_url: str | None = Field(
-        default=None, description="URL of the GitHub issue created for the code-level fix"
-    )
-    provider_facts: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Whatever else the receiving platform answered, carried verbatim and never "
-            "interpreted here — downstream handling facts, recurrence markers, attempt "
-            "counts. Which keys appear is the receiver's business (see the handoff provider "
-            "descriptor); a reader that understands that receiver reads them, and this agent "
-            "does not paraphrase a fact it cannot check"
+            "`failed()` — absent on a completed run, because the last tool call itself is "
+            "the record of what happened"
         ),
     )
 
     @classmethod
-    def _classification_from(
-        cls, outcome: dict[str, Any], provider: HandoffProvider
-    ) -> HandoffClassification:
-        """Read back the classification the RECEIVER derived.
+    def compose(cls, outcome: dict[str, Any] | None) -> "HandoffResult":
+        """Assemble the persisted record from the stage's last recorded call.
 
-        It is not derived here. What the remediation statuses mean is AE's
-        contract, it is the same rule AE's own escalation reads, and two
-        derivations of one fact are two things that can disagree. AE spells the
-        values with hyphens; this enum spells them with underscores.
-
-        An unanswered call — the stage threw, the model ended its turn without
-        calling create, the receiver answered something unrecognised — records
-        `code_level`. That is the safe direction and the one the read side needs:
-        an absent value there defaults to `none`, which would relabel a real
-        code-level incident as nothing-to-do on the report somebody triages.
+        `outcome` is `ToolCallRecorder`'s last entry (`{"tool": ..., "result": ...}`),
+        or `None` when the stage made no tool call at all. No model input
+        reaches this beyond what the model itself caused to be called.
         """
-        answered = outcome.get(provider.answer_classification)
-        if isinstance(answered, str):
-            try:
-                return HandoffClassification(answered.replace("-", "_"))
-            except ValueError:
-                pass
-        return HandoffClassification.CODE_LEVEL
+        if outcome is None:
+            return cls()
+        return cls(tool=outcome.get("tool"), result=outcome.get("result"))
 
     @classmethod
-    def compose(cls, outcome: dict[str, Any], provider: HandoffProvider) -> HandoffResult:
-        """Assemble the persisted record from what the receiver answered.
-
-        No model input reaches this. The skill's only write is the
-        `ae_create_issue` call itself (title, body, labels); everything on
-        this record is either derived server-side (`classification`) or
-        stamped straight off the wire (the issue number, url, `deduped`).
-
-        An empty outcome means the create tool was never reached — the stage
-        errored, or the model ended its turn without calling it. AE's own
-        escalation is what notices the absent issue; nothing here retries.
-        """
+    def failed(cls, error: BaseException) -> "HandoffResult":
+        """The record for a stage that threw before it could file."""
         return cls(
-            classification=cls._classification_from(outcome, provider),
-            created_issue_number=outcome.get(provider.answer_issue_number),
-            created_issue_url=outcome.get(provider.answer_issue_url),
-            deduped=bool(outcome.get(provider.answer_already_filed)),
-            provider_facts=dict(outcome.get("facts") or {}),
-        )
-
-    @classmethod
-    def failed(cls, error: BaseException) -> HandoffResult:
-        """The record for a stage that threw before it could file.
-
-        Without this the report simply has no `handoff` key, which is the shape
-        a legitimate "nothing to hand over" also has — so a crashed loader
-        reads as a decision. The incident itself is safe either way: AE files
-        the issue this stage owed, because its escalation keys off the absent
-        issue number rather than anything said here.
-
-        It records `code_level` for the same reason an unanswered create call
-        does: the read side defaults an absent value to `none`, which would
-        relabel a code-level incident as nothing-to-do on the very report
-        somebody triages, and the classification is AE's to answer — a stage
-        that never reached AE has no answer to record.
-        """
-        return cls(
-            classification=HandoffClassification.CODE_LEVEL,
             failure_reason=f"The handoff stage failed before it could file: {error}",
         )
 
@@ -434,55 +344,3 @@ class RCAReport(BaseModel):
         default=None,
         description="AE coding-agent handoff outcome, if the handoff stage ran",
     )
-
-
-def handoff_view(report_data: dict[str, Any]) -> dict[str, Any]:
-    """The report as the issue-writing stage should see it. Two things are
-    withheld, and both are boundaries rather than judgments — the model cannot
-    weigh what it never sees.
-
-    **The observability recommendations, entirely.** `recommended_actions` is how
-    this incident gets fixed; `observability_recommendations` is advice for making
-    FUTURE analyses easier ("add a metric", "raise the log level"), and it is the
-    main source of issues a coding agent cannot act on. This does NOT narrow what
-    a code-level fix can be: a logging gap that is part of THIS incident's root
-    cause arrives as a recommended_action and is filed like any other.
-
-    **The `change` patch on every already-handled (`revised`) action.** The issue
-    this stage writes becomes a coding agent's prompt, and that agent can only
-    edit the repository — so a concrete ReleaseBinding patch in front of it is an
-    invitation to express config as code and open a wrong pull request. The
-    action's description and status stay, because the model does need to know that
-    part of the incident was already fixed by configuration; otherwise it writes
-    an issue asking for that fix again, in code.
-
-    Dict-shaped rather than a method on RCAReport: the stage works on the dumped
-    report, which remediation has already written its statuses back into.
-
-    Returns a copied view, deep only where it edits. The stored report keeps every
-    field: the console renders the observability recommendations and the config
-    patches, so trimming report_data itself would delete something a human is
-    meant to read.
-    """
-    result = report_data.get("result")
-    if not isinstance(result, dict):
-        return report_data
-    recommendations = result.get("recommendations")
-    if not isinstance(recommendations, dict):
-        return report_data
-
-    trimmed: dict[str, Any] = {
-        k: v for k, v in recommendations.items() if k != "observability_recommendations"
-    }
-    actions = trimmed.get("recommended_actions")
-    if isinstance(actions, list):
-        trimmed["recommended_actions"] = [
-            {k: v for k, v in action.items() if k != "change"}
-            if isinstance(action, dict) and action.get("status") == ActionStatus.REVISED
-            else action
-            for action in actions
-        ]
-    return {
-        **report_data,
-        "result": {**result, "recommendations": trimmed},
-    }
