@@ -60,7 +60,7 @@ class MCPClient:
         self._client = MultiServerMCPClient(connections)
         logger.debug("Initialized MCP client with servers: %s", list(connections))
 
-    async def get_tools(self) -> list[BaseTool]:
+    async def get_tools(self, *, server_name: str | None = None) -> list[BaseTool]:
         # Retry with exponential backoff: get_tools() opens fresh connections
         # to all configured MCP servers in a task group, so a single transient
         # failure (a server slow under load, an OAuth token fetch timing out on
@@ -72,7 +72,7 @@ class MCPClient:
         last_exc: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
-                return await self._client.get_tools()
+                return await self._client.get_tools(server_name=server_name)
             except Exception as e:  # noqa: BLE001 — retry any connection/task-group error
                 last_exc = e
                 if attempt < attempts:
