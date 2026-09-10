@@ -342,5 +342,5 @@ class RCAReport(BaseModel):
 
     handoff: HandoffResult | None = Field(
         default=None,
-        description="AE coding-agent handoff outcome, if the handoff stage ran",
+        description="The handoff stage's outcome, if it ran",
     )

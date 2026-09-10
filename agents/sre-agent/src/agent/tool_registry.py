@@ -107,11 +107,6 @@ OPENCHOREO_TOOLS = {t for t in _ALL if t.server == OPENCHOREO}
 # from whichever platform receives the handoff, at request time — see
 # MCPClient.get_tools(server_name="handoff") in src/agent/agent.py. This
 # registry cannot and does not need to know their names at import.
-# Their streaming labels are registered at load time instead.
-HANDOFF_ACTIVE_FORMS = {
-    "create_issue": "Filing the issue...",
-    "search_related": "Searching related issues...",
-}
 
 # Active forms for streaming UI
 TOOL_ACTIVE_FORMS: dict[str, str] = {

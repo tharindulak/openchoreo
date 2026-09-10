@@ -17,7 +17,7 @@ required, with the exact files involved.
 | Add a new agent stage (like remediation) | `Agent(...)` in `src/agent/agent.py` + wire into `run_analysis` | yes |
 | Change the report shape / contract | `src/models/rca_report.py` | yes |
 | Toggle the remediation agent | `REMED_AGENT` env | no |
-| Toggle the handoff stage | `HANDOFF_ENABLED` env, with `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_PROVIDER_FILE` and `EXTERNAL_SKILLS_DIR` (`src/config.py`) | no |
+| Toggle the handoff stage | `HANDOFF_ENABLED` env, with `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_HEADER_MAP` and `EXTERNAL_SKILLS_DIR` (`src/config.py`) | no |
 | Expose new capabilities to upstream agents | `@mcp_server.tool()` in `src/mcp_server.py` | yes |
 
 ---
@@ -35,7 +35,7 @@ Env-driven settings in `src/config.py` (loaded from `.env` / container env):
 | Remediation agent | `REMED_AGENT` (`true`/`false`) | enable the 2nd (revise-recommendations) agent |
 | Concurrency / timeout | `max_concurrent_analyses`, `analysis_timeout_seconds` | |
 | Data sources | `OBSERVER_API_URL`, `OPENCHOREO_API_URL` | MCP / API endpoints |
-| Handoff stage | `HANDOFF_ENABLED`, `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_PROVIDER_FILE`, `EXTERNAL_SKILLS_DIR` | hand code-level work to a receiving platform: its MCP endpoint, the descriptor naming its tools/headers/answers, and the skills mount its playbook arrives in (§8) |
+| Handoff stage | `HANDOFF_ENABLED`, `HANDOFF_API_URL`, `HANDOFF_MCP_PATH`, `HANDOFF_HEADER_MAP`, `EXTERNAL_SKILLS_DIR` | hand code-level work to a receiving platform: its MCP endpoint, the per-run identity headers `HANDOFF_HEADER_MAP` maps context fields onto, and the skills mount its playbook arrives in (§8) |
 | Auth | OAuth2 / JWT vars + `auth-config.yaml` | authn/authz |
 
 ## 2. Prompt customization (Jinja templates, no logic)
@@ -164,9 +164,12 @@ errors is indistinguishable from one that works.
   platform this agent hands code-level work to, see `AE-HANDOFF-DESIGN.md`) is added
   conditionally when `HANDOFF_ENABLED=true`, following the same
   `observability`/`openchoreo` pattern — reuses the caller's `httpx.Auth`, no separate
-  auth plumbing. Its tool NAMES are not in `tool_registry.py`: they arrive in the
-  provider descriptor (`HANDOFF_PROVIDER_FILE`), as do the per-run identity headers
-  that connection carries.
+  auth plumbing. Its tool NAMES are not in `tool_registry.py`: they are discovered
+  generically from whatever the `handoff` connection advertises at request time. The
+  per-run identity headers that connection carries are configured via
+  `HANDOFF_HEADER_MAP` (`src/config.py`), which maps this agent's own context fields
+  (`project`, `component`, `signature`, `action_statuses`) onto whatever header names
+  the receiver expects.
 - **Expose more** — `src/mcp_server.py` makes the agent itself an MCP server
   (`analyze_runtime_state`, `get_rca_report`). Add `@mcp_server.tool()` functions to expose
   new capabilities to upstream agents (e.g. the portal assistant). Auth is enforced by the

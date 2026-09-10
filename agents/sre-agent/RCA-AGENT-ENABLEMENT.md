@@ -329,27 +329,33 @@ the last two:
    `cd <openchoreo>/agents && docker build -t <repo>/sre-agent:<tag> -f sre-agent/Dockerfile .`
    → `k3d image import <repo>/sre-agent:<tag> -c <cluster>`, then
    `kubectl set image deploy/ai-rca-agent -n openchoreo-observability-plane "*=<repo>/sre-agent:<tag>"`.
-2. **The receiver's descriptor and skill, mounted.** The descriptor names the receiver's tools,
-   the per‑run identity headers and the answer fields; the skill is the stage's entire playbook
-   (there is no built‑in copy, so an unmounted skill fails agent creation). AEP's
-   `deployments/scripts/setup-observability.sh` step 3d renders both into ConfigMaps and patches
-   the Deployment with the volumes, the mounts and `EXTERNAL_SKILLS_DIR`. Edit the skill or the
-   descriptor on the AEP side and re‑apply — **no SRE image rebuild**. Editing the agent's own
-   prompt template DOES need a rebuild; it is baked into the image.
+2. **The receiver's skill, mounted.** The skill is the stage's entire playbook (there is no
+   built‑in copy, so an unmounted skill fails agent creation). AEP's
+   `deployments/scripts/setup-observability.sh` step 3d renders it into a ConfigMap and patches
+   the Deployment with the volume, the mount and `EXTERNAL_SKILLS_DIR`. Edit the skill on the
+   AEP side and re‑apply — **no SRE image rebuild**. Editing the agent's own prompt template
+   DOES need a rebuild; it is baked into the image. The receiver's tools are not named anywhere
+   in this repo either — they are discovered generically from whatever the `handoff` MCP
+   connection advertises at request time.
 3. **Config** on `rca-agent-config`:
    ```
    kubectl patch cm rca-agent-config -n openchoreo-observability-plane --type=merge -p \
      '{"data":{"HANDOFF_ENABLED":"true",
                 "HANDOFF_API_URL":"http://host.k3d.internal:3401",
-                "HANDOFF_PROVIDER_FILE":"/etc/rca-agent/handoff/provider.json",
+                "HANDOFF_HEADER_MAP":"{\"project\":\"X-AEP-Incident-Project\",\"component\":\"X-AEP-Incident-Component\",\"signature\":\"X-AEP-Incident-Signature\",\"action_statuses\":\"X-AEP-Handoff-Action-Statuses\"}",
                 "REPORT_SINK":"webhook",
                 "REPORT_SINK_URL":"http://host.k3d.internal:9090/api/v1/rca-agent/reports"}}'
    ```
    `HANDOFF_API_URL` is the receiver's MCP base (AEP's `aep-mcp-server`, `:3401`) and the agent
-   appends `HANDOFF_MCP_PATH` (default `/mcp`). `REPORT_SINK_URL` is something else entirely —
-   aep‑api's REST endpoint on `:9090`, and the FULL url, not a base. Omit the sink pair and
-   reports go nowhere, which empties the console's Alerts list **silently**, because publishing
-   is best‑effort by design.
+   appends `HANDOFF_MCP_PATH` (default `/mcp`). `HANDOFF_HEADER_MAP` is a JSON object string
+   mapping this agent's own context fields (`project`, `component`, `signature`,
+   `action_statuses`) to whatever request header names the receiver expects — see
+   `src/config.py`'s `handoff_header_map` and `src/agent/handoff_headers.py`. It is **required**
+   whenever `HANDOFF_ENABLED=true`: the agent refuses to start without it (`src/config.py`'s
+   startup validation), same as a missing `EXTERNAL_SKILLS_DIR`. `REPORT_SINK_URL` is something
+   else entirely — aep‑api's REST endpoint on `:9090`, and the FULL url, not a base. Omit the
+   sink pair and reports go nowhere, which empties the console's Alerts list **silently**,
+   because publishing is best‑effort by design.
 4. **Auth**: extend the receiver's `JWT_AUDIENCE` with `openchoreo-rca-agent`. The agent's
    client‑credentials token carries the right issuer and the `ouHandle` org claim already; only
    the audience needed accommodating (comma‑lists are supported).
@@ -371,9 +377,9 @@ AEP resolves the component against its own design before filing, and any other n
 call with a 400 (naming the string that was sent) before an issue exists. Nothing retries a
 handoff.
 
-**Verify** at agent startup: `MCP connection successful: loaded N tools` (the base set plus the
-two the descriptor names) and `Handoff provider loaded from …`. Then trigger and watch for
-`Running handoff agent` → `Handoff completed: classification=…, issue=…, facts=…`.
+**Verify** at agent startup: `Discovered N tools from 'handoff': […]` naming whatever the
+receiver's MCP connection advertised. Then trigger and watch for `Running handoff agent` →
+`Handoff completed: tool=…, result=…`.
 Verified E2E on this stack 2026‑07‑03: alert → RCA → issue → coding‑agent run.
 
 ## Important behavior note
