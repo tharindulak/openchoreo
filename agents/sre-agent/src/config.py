@@ -1,7 +1,9 @@
 # Copyright 2025 The OpenChoreo Authors
 # SPDX-License-Identifier: Apache-2.0
 
-from pydantic import model_validator
+import json
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import SettingsConfigDict
 
 from common.config import CommonSettings
@@ -105,10 +107,29 @@ class Settings(CommonSettings):
             )
         return self
 
-    # Names the receiving platform ships for the tools it exposes and the
-    # answers it gives (src/agent/handoff_provider.py). Mounted at deploy time
-    # like the handoff skill, because the platform owns both.
-    handoff_provider_file: str = ""
+    # This agent's own field names, mapped onto whatever header names the
+    # configured receiver expects: {"project": "X-AEP-Incident-Project", ...}.
+    # The field names are fixed (project, component, signature, action_statuses
+    # — whatever run_analysis's handoff block builds); the header names are
+    # deploy-time config, set by whoever operates this agent alongside a
+    # specific receiver. This agent never spells a receiver's header name
+    # itself — see src/agent/handoff_headers.py.
+    handoff_header_map: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("handoff_header_map", mode="before")
+    @classmethod
+    def _parse_handoff_header_map(cls, value: object) -> object:
+        # ConfigMap data values are always strings, so the real deployment
+        # path always sends a JSON object string; the dict form is accepted
+        # too, for tests and direct construction.
+        if isinstance(value, str):
+            if not value:
+                return {}
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"handoff_header_map is not valid JSON: {e}") from e
+        return value
 
     @model_validator(mode="after")
     def _validate_handoff_config(self) -> Settings:
@@ -118,22 +139,23 @@ class Settings(CommonSettings):
             name
             for name, value in (
                 ("handoff_api_url", self.handoff_api_url),
-                ("handoff_provider_file", self.handoff_provider_file),
+                ("handoff_header_map", self.handoff_header_map),
                 ("external_skills_dir", self.external_skills_dir),
             )
             if not value
         ]
         if missing:
-            # Loud, at startup. Without the descriptor the agent would still
-            # run, still reach the model, and still call the create tool — with
-            # none of the facts pinned onto it. That files an issue nothing can
-            # dedupe and nobody hands over, and it looks like success.
+            # Loud, at startup. Without a header map the agent would still
+            # run, still reach the model, and still call the create tool —
+            # with no incident identity attached to any of it. That files
+            # issues nothing can dedupe and looks like success.
             #
-            # The skills mount fails the same way one layer earlier: the stage's
-            # whole playbook is the mounted skill, so without it load_skills
-            # raises once per incident, the broad handler in run_analysis saves
-            # the report with no handoff key, and "the loader broke" is
-            # indistinguishable from "nothing needed handing over".
+            # The skills mount fails the same way one layer earlier: the
+            # stage's whole playbook is the mounted skill, so without it
+            # load_skills raises once per incident, the broad handler in
+            # run_analysis saves the report with no handoff key, and "the
+            # loader broke" is indistinguishable from "nothing needed
+            # handing over".
             raise ValueError(f"handoff_enabled=True requires: {', '.join(missing)}")
         return self
 
