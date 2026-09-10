@@ -21,8 +21,8 @@ from langchain.messages import ToolMessage
 from langchain.tools.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-from src.agent.middleware.handoff_outcome import parse_tool_result
 from src.agent.tool_registry import TOOLS
+from src.agent.tool_result import parse_tool_result
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,8 @@ class LogCaptureMiddleware(AgentMiddleware):
             return result
         if not isinstance(result, ToolMessage):
             return result
-        try:
-            content = parse_tool_result(result.content)
-        except TypeError, ValueError, AttributeError:
-            return result
-        logs = content.get("logs")
+        content = parse_tool_result(result.content)
+        logs = content.get("logs") if isinstance(content, dict) else None
         if isinstance(logs, list):
             self._captured.extend(entry for entry in logs if isinstance(entry, dict))
         return result

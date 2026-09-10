@@ -78,3 +78,12 @@ def test_the_model_still_sees_the_result_unchanged():
         )
     )
     assert result.content == json.dumps(LOGS_RESULT)
+
+
+def test_a_json_but_non_dict_result_is_skipped_not_raised():
+    captured: list[dict] = []
+    # query_component_logs never legitimately returns a bare list, but the
+    # guard must degrade the same way an unparseable string does rather than
+    # raise AttributeError on .get.
+    _run(LogCaptureMiddleware(captured), TOOLS.QUERY_COMPONENT_LOGS, json.dumps([1, 2, 3]))
+    assert captured == []
