@@ -103,9 +103,10 @@ _ALL = [v for v in vars(TOOLS).values() if isinstance(v, Tool)]
 # Tool names grouped by server
 OBSERVABILITY_TOOLS = {t for t in _ALL if t.server == OBSERVABILITY}
 OPENCHOREO_TOOLS = {t for t in _ALL if t.server == OPENCHOREO}
-# The handoff's tools are NOT listed above: their names belong to whichever
-# platform receives the handoff and arrive in its provider descriptor
-# (src/agent/handoff_provider.py), so this registry cannot know them at import.
+# The handoff's tools are NOT listed above: they are discovered generically
+# from whichever platform receives the handoff, at request time — see
+# MCPClient.get_tools(server_name="handoff") in src/agent/agent.py. This
+# registry cannot and does not need to know their names at import.
 # Their streaming labels are registered at load time instead.
 HANDOFF_ACTIVE_FORMS = {
     "create_issue": "Filing the issue...",

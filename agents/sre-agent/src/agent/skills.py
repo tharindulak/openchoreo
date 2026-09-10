@@ -100,8 +100,8 @@ def discover_skills(search_dirs: list[Path] | None = None) -> list[Skill]:
     """Every skill mounted under the skill roots, found by directory rather
     than named up front.
 
-    Resolved fresh on every call, the same way `tools=lambda:
-    load_provider().tools` already is — a skill mounted alongside an existing
+    Resolved fresh on every call, the same way tools are dynamically discovered
+    from MCP servers at request time — a skill mounted alongside an existing
     one (a new ConfigMap + volume, no image rebuild) reaches the catalog on
     the agent's next request. A skill's CONTENT already worked this way
     (`load_skill` is a plain file read); this is the same treatment for which
