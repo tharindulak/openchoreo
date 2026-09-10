@@ -23,12 +23,12 @@ from pydantic import BaseModel
 
 from common.auth.bearer import BearerTokenAuth
 from src.agent.fingerprint import error_fingerprint
-from src.agent.handoff_provider import load_provider
+from src.agent.handoff_headers import build_handoff_headers
 from src.agent.middleware import (
-    HandoffOutcomeMiddleware,
     LogCaptureMiddleware,
     LoggingMiddleware,
     OutputTransformerMiddleware,
+    ToolCallRecorder,
     ToolErrorHandlerMiddleware,
 )
 from src.agent.skills import Skill, create_load_skill_tool, discover_skills, load_skills
@@ -47,7 +47,7 @@ from src.config import settings
 from src.helpers import AlertScope
 from src.logging_config import request_id_context
 from src.models import ChatResponse, HandoffResult, RCAReport
-from src.models.rca_report import RootCauseIdentified, handoff_view
+from src.models.rca_report import RootCauseIdentified
 from src.models.remediation_result import RemediationResult
 from src.templates import render
 
@@ -66,6 +66,7 @@ class Agent:
         use_summarization: bool = False,
         tool_factories: list[Callable[..., BaseTool]] | None = None,
         skills: set[str] | Callable[[], list[Skill]] | None = None,
+        tools_from_server: str | None = None,
     ):
         self.template = template
         self.tools = tools
@@ -75,6 +76,7 @@ class Agent:
         self._use_summarization = use_summarization
         self._tool_factories = tool_factories or []
         self._skills = skills or set()
+        self._tools_from_server = tools_from_server
 
     async def create(
         self,
@@ -88,22 +90,30 @@ class Agent:
         model = get_model(model_name=settings.rca_model_name, api_key=resolve_api_key())
         tools: list[BaseTool] = []
 
-        # Resolved per call, not at import: the handoff's tool names live in the
-        # receiving platform's descriptor, which is mounted at deploy time.
-        wanted = self.tools() if callable(self.tools) else self.tools
-        if wanted:
-            mcp_client = MCPClient(
-                auth=auth,
-                handoff_headers=context.get("handoff_headers") if context else None,
+        handoff_headers = context.get("handoff_headers") if context else None
+        if self._tools_from_server:
+            # Standard MCP discovery: every tool this named connection
+            # advertises, unfiltered. No tool name is ever spelled here — the
+            # handoff connection's own tool list IS the allow-list.
+            mcp_client = MCPClient(auth=auth, handoff_headers=handoff_headers)
+            tools = list(await mcp_client.get_tools(server_name=self._tools_from_server))
+            logger.debug(
+                "Discovered %d tools from '%s': %s",
+                len(tools),
+                self._tools_from_server,
+                [t.name for t in tools],
             )
-            all_tools = await mcp_client.get_tools()
-            tools = [t for t in all_tools if t.name in wanted]
-            logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
+        else:
+            wanted = self.tools() if callable(self.tools) else self.tools
+            if wanted:
+                mcp_client = MCPClient(auth=auth, handoff_headers=handoff_headers)
+                all_tools = await mcp_client.get_tools()
+                tools = [t for t in all_tools if t.name in wanted]
+                logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
 
         for factory in self._tool_factories:
             tools.append(factory(auth))
 
-        provider = context.get("handoff_provider") if context else None
         # A callable discovers by directory (whatever's mounted, resolved
         # fresh); a literal set names skills up front and raises if one is
         # missing. Both produce the same shape, a catalog of Skill objects.
@@ -122,24 +132,18 @@ class Agent:
             "tools": tools,
             "observability_tools": [t for t in tools if t.name in OBSERVABILITY_TOOLS],
             "openchoreo_tools": [t for t in tools if t.name in OPENCHOREO_TOOLS],
-            "handoff_tools": [t for t in tools if provider and t.name in provider.tools],
             "skills_catalog": skills_catalog,
         }
         if context:
             template_context.update(context)
 
         middleware = [m() for m in self._middleware_classes]
-        # An instance, not a class: it holds this run's outcome dict, which the
-        # stage reads back afterwards to compose the record from what the
-        # receiver actually answered.
-        if provider is not None and context is not None:
-            outcome = context.get("handoff_outcome")
-            if outcome is not None:
-                middleware.append(
-                    HandoffOutcomeMiddleware(
-                        provider, outcome, context.get("handoff_action_statuses")
-                    )
-                )
+        # An instance, not a class: it holds this run's own list, appended to
+        # as the run makes tool calls.
+        if context is not None:
+            tool_call_log = context.get("tool_call_log")
+            if tool_call_log is not None:
+                middleware.append(ToolCallRecorder(tool_call_log))
         # Only the caller that asks for it gets logs captured — today that is
         # run_analysis's RCA_AGENT call. CHAT_AGENT uses the same tool for an
         # unrelated, ad-hoc conversation, and must not feed a fingerprint.
@@ -231,24 +235,22 @@ def handoff_skills() -> list[Skill]:
 
 HANDOFF_AGENT = Agent(
     template="prompts/handoff_agent_prompt.j2",
-    # Callable, not a literal: which tools exist is the receiving platform's
-    # answer, read from its descriptor at request time.
-    tools=lambda: load_provider().tools,
+    tools=set(),
+    # Standard MCP discovery: every tool the "handoff" connection advertises.
+    # No provider descriptor names them — see MCPClient.get_tools(server_name=...).
+    tools_from_server="handoff",
     middleware=[
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
     ],
     # No structured output: the skill's only job is composing the issue via
-    # ae_create_issue, and everything else about the outcome — classification,
+    # whichever create-issue-shaped tool the connection advertises.
     response_format=None,
     recursion_limit=50,
     # Discovered by directory, not named: whatever is mounted under
     # EXTERNAL_SKILLS_DIR is in the catalog, so a second skill needs no code
     # change here — only a ConfigMap + volume. Fatal on zero found: this
-    # stage's entire playbook IS a mounted skill, and the config validator
-    # already refuses to start without EXTERNAL_SKILLS_DIR set at all — an
-    # empty or unreadable mount deserves the same loud failure, not a quiet
-    # handoff run with no skill loaded.
+    # stage's entire playbook IS a mounted skill.
     skills=handoff_skills,
 )
 
@@ -357,17 +359,6 @@ async def stream_chat(
                 "message": f"An error occured (request_id: {request_id_context.get()})",
             }
         )
-
-
-def _handoff_log_fields(result: HandoffResult) -> tuple[str, str | None, dict[str, Any]]:
-    """What the stage logs about a completed handoff.
-
-    `provider_facts` is logged whole rather than field by field. Its keys come
-    from the receiver's descriptor, so naming one here would put a receiver's
-    vocabulary back into this repository — and a key the receiver did not answer
-    is absent rather than false, which a per-field log line cannot express.
-    """
-    return result.classification, result.created_issue_url, dict(result.provider_facts)
 
 
 async def run_analysis(
@@ -484,57 +475,56 @@ async def run_analysis(
                 ]
                 try:
                     logger.info("Running handoff agent")
-                    provider = load_provider()
-                    # Filled by the outcome middleware with what the receiver
-                    # answered; read back after the run so the report's issue
-                    # facts are from the wire rather than restated.
-                    handoff_outcome: dict[str, Any] = {}
+                    # Filled by the recorder with every tool call the stage
+                    # made; the caller reads the LAST one — the skill's own
+                    # constraint ("Creating that issue is your only write")
+                    # guarantees that is the filing call, without this code
+                    # needing to name it.
+                    tool_calls: list[dict[str, Any]] = []
                     handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
                         auth=get_oauth2_auth(),
                         usage_callback=usage_callback,
                         context={
                             "scope": scope,
-                            "handoff_provider": provider,
-                            "handoff_outcome": handoff_outcome,
-                            # Forced onto the create call by middleware, not
-                            # asked of the model: a status it chose would move
-                            # AE's classification, its adoption and its dedupe
-                            # namespace on the strength of a re-reading.
-                            "handoff_action_statuses": action_statuses,
-                            # This incident's identity, under the receiver's
-                            # own header names. Out of the model's reach: a
-                            # component it chose would be a valid sibling
-                            # filed under the wrong dedupe namespace.
-                            "handoff_headers": provider.incident_headers(
-                                scope.project,
-                                scope.component,
-                                error_fingerprint(report_data, raw_log_lines),
+                            "tool_call_log": tool_calls,
+                            # Every deterministic, model-independent fact this
+                            # run carries — incident identity and the action
+                            # statuses alike — rendered under whatever header
+                            # names deploy-time config maps them to. Out of the
+                            # model's reach: it never sees these values as
+                            # arguments it could restate.
+                            "handoff_headers": build_handoff_headers(
+                                {
+                                    "project": scope.project,
+                                    "component": scope.component,
+                                    "signature": error_fingerprint(report_data, raw_log_lines),
+                                    "action_statuses": action_statuses,
+                                },
+                                settings.handoff_header_map,
                             ),
                         },
                     )
 
-                    # handoff_view, not report_data: the observability
-                    # recommendations are advice about future RCAs, not this
-                    # incident's fix, and they are the noise this stage must
-                    # not file issues for.
+                    # The full report: content-shaping (which sections matter,
+                    # what to exclude) is the skill's own instructions now, not
+                    # a Python filter — see coding-agent-handoff/SKILL.md.
                     messages: list[dict[str, Any]] = [
-                        {"role": "user", "content": json.dumps(handoff_view(report_data))}
+                        {"role": "user", "content": json.dumps(report_data)}
                     ]
                     await asyncio.wait_for(
                         handoff_agent.ainvoke({"messages": messages}),
                         timeout=settings.analysis_timeout_seconds,
                     )
 
-                    handoff_report = HandoffResult.compose(handoff_outcome, provider)
+                    outcome = tool_calls[-1] if tool_calls else None
+                    handoff_report = HandoffResult.compose(outcome)
                     if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
                         logger.debug("Handoff tool calls: %s", summary_line)
                     report_data["handoff"] = handoff_report.model_dump()
-                    log_classification, issue_url, facts = _handoff_log_fields(handoff_report)
                     logger.info(
-                        "Handoff completed: classification=%s, issue=%s, facts=%s",
-                        log_classification,
-                        issue_url,
-                        facts,
+                        "Handoff completed: tool=%s, result=%s",
+                        handoff_report.tool,
+                        handoff_report.result,
                     )
                 except Exception as e:
                     # Recorded, not just logged: an absent `handoff` key is

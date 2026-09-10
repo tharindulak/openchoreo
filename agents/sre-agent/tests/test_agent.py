@@ -104,6 +104,52 @@ async def test_create_attaches_usage_callback():
     fake_agent.with_config.assert_called_once_with({"recursion_limit": 42, "callbacks": [cb]})
 
 
+@pytest.mark.asyncio
+async def test_create_with_tools_from_server_takes_every_tool_unfiltered():
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+    agent_obj = Agent(
+        template="prompts/x.j2",
+        tools=set(),
+        tools_from_server="handoff",
+        middleware=[LoggingMiddleware],
+        response_format=None,
+        recursion_limit=42,
+    )
+
+    with (
+        patch("src.agent.agent.create_agent", return_value=fake_agent),
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(
+            return_value=[_tool("ae_search_related_issues"), _tool("ae_create_issue")]
+        )
+        await agent_obj.create(auth=AUTH)
+
+    mcp_cls.return_value.get_tools.assert_awaited_once_with(server_name="handoff")
+
+
+@pytest.mark.asyncio
+async def test_create_appends_tool_call_recorder_when_context_asks_for_it():
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "CONFIGURED"
+    agent_obj = _make_agent(tools=set())
+
+    with (
+        patch("src.agent.agent.create_agent", return_value=fake_agent) as create_agent_mock,
+        patch("src.agent.agent.render", lambda *a, **k: "PROMPT"),
+        patch("src.agent.agent.MCPClient") as mcp_cls,
+    ):
+        mcp_cls.return_value.get_tools = AsyncMock(return_value=[])
+        await agent_obj.create(auth=AUTH, context={"tool_call_log": []})
+
+    from src.agent.middleware import ToolCallRecorder
+
+    middleware_instances = create_agent_mock.call_args.kwargs["middleware"]
+    assert any(isinstance(m, ToolCallRecorder) for m in middleware_instances)
+
+
 # ------------------------------------------------------------ run_analysis
 
 
@@ -245,9 +291,9 @@ async def test_stream_chat_streams_message_and_done():
 
 @pytest.mark.asyncio
 async def test_run_analysis_records_a_failed_handoff_on_the_report():
-    # A stage that threw must not leave the report in the same shape as one that
-    # decided nothing needed handing over — that is the ambiguity a human hits
-    # while triaging, and it hides a broken skill mount.
+    # A stage that threw must not leave the report in the same shape as one
+    # that decided nothing needed handing over — that is the ambiguity a
+    # human hits while triaging, and it hides a broken skill mount.
     backend = MagicMock()
     backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
     remed = make_remediation_result(
@@ -263,22 +309,25 @@ async def test_run_analysis_records_a_failed_handoff_on_the_report():
         patches[4],
         patches[5],
         patch.object(agent_module.settings, "handoff_enabled", True),
-        patch("src.agent.agent.load_provider", side_effect=RuntimeError("Skill 'x' not found")),
+        patch.object(
+            agent_module.HANDOFF_AGENT,
+            "create",
+            AsyncMock(side_effect=RuntimeError("Skill 'x' not found")),
+        ),
     ):
         await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
 
     handoff = backend.upsert_rca_report.await_args.kwargs["report"]["handoff"]
-    assert handoff["classification"] == "code_level"
+    assert handoff["tool"] is None
+    assert handoff["result"] is None
     assert "Skill 'x' not found" in handoff["failure_reason"]
-    assert handoff["created_issue_number"] is None
-    assert handoff["deduped"] is False
 
 
 @pytest.mark.asyncio
 async def test_create_resolves_a_callable_skills_catalog_fresh_per_call():
     # Discovery, not a literal set: the catalog comes from calling the
-    # function, mirroring how `tools=lambda: load_provider().tools` already
-    # resolves per request rather than at construction time.
+    # function, mirroring how `tools_from_server` already resolves the tool
+    # list per request rather than at construction time.
     captured = {}
     fake_agent = MagicMock()
     fake_agent.with_config.return_value = "CONFIGURED"
