@@ -462,11 +462,11 @@ async def run_analysis(
 
             if settings.handoff_enabled and isinstance(rca_report.result, RootCauseIdentified):
                 # The statuses themselves, not a verdict over them. What they
-                # MEAN is AE's contract — the same rule its own escalation
-                # reads — and it answers back the classification it chose. One
-                # entry per action, None where remediation set none: filtering
-                # the Nones out would read as an action-free report, which is
-                # the opposite conclusion.
+                # MEAN is the receiver's own contract — it reads them back and
+                # answers with whatever classification it chose. One entry per
+                # action, None where remediation set none: filtering the Nones
+                # out would read as an action-free report, which is the
+                # opposite conclusion.
                 action_statuses = [
                     action.get("status")
                     for action in report_data["result"]["recommendations"][
