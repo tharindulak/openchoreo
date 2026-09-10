@@ -89,6 +89,13 @@ class Agent:
         # effect on the next analysis/chat request without a pod restart.
         model = get_model(model_name=settings.rca_model_name, api_key=resolve_api_key())
         tools: list[BaseTool] = []
+        # Names of tools discovered from the MCP connection — as opposed to
+        # local tools (`self._tool_factories`, `create_load_skill_tool`'s
+        # output) added below. Generic: which tools came from the connection
+        # this Agent was told to discover from, not any particular tool's
+        # name. Fed to ToolCallRecorder so it only records calls that
+        # actually crossed to that connection — see its own docstring.
+        connection_tool_names: set[str] = set()
 
         handoff_headers = context.get("handoff_headers") if context else None
         if self._tools_from_server:
@@ -97,6 +104,7 @@ class Agent:
             # handoff connection's own tool list IS the allow-list.
             mcp_client = MCPClient(auth=auth, handoff_headers=handoff_headers)
             tools = list(await mcp_client.get_tools(server_name=self._tools_from_server))
+            connection_tool_names = {t.name for t in tools}
             logger.debug(
                 "Discovered %d tools from '%s': %s",
                 len(tools),
@@ -109,6 +117,7 @@ class Agent:
                 mcp_client = MCPClient(auth=auth, handoff_headers=handoff_headers)
                 all_tools = await mcp_client.get_tools()
                 tools = [t for t in all_tools if t.name in wanted]
+                connection_tool_names = {t.name for t in tools}
                 logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
 
         for factory in self._tool_factories:
@@ -143,7 +152,7 @@ class Agent:
         if context is not None:
             tool_call_log = context.get("tool_call_log")
             if tool_call_log is not None:
-                middleware.append(ToolCallRecorder(tool_call_log))
+                middleware.append(ToolCallRecorder(tool_call_log, connection_tool_names))
         # Only the caller that asks for it gets logs captured — today that is
         # run_analysis's RCA_AGENT call. CHAT_AGENT uses the same tool for an
         # unrelated, ad-hoc conversation, and must not feed a fingerprint.
