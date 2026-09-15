@@ -477,6 +477,12 @@ async def run_analysis(
                 except Exception as e:
                     logger.error("Remediation agent failed, saving RCA report without it: %s", e)
 
+            # Set when the cooldown gate suppresses the handoff call below —
+            # read at the sink-publish call site further down, so it must
+            # exist regardless of which branch of the handoff-enabled check
+            # runs (or whether it runs at all).
+            handoff_suppressed = False
+
             if settings.handoff_enabled and isinstance(rca_report.result, RootCauseIdentified):
                 # The statuses themselves, not a verdict over them. What they
                 # MEAN is the receiver's own contract — it reads them back and
@@ -490,12 +496,24 @@ async def run_analysis(
                         "recommended_actions"
                     ]
                 ]
-                fingerprint = error_fingerprint(report_data, raw_log_lines)
-                dedupe_key = f"{scope.project}/{scope.component}/{fingerprint or 'nofp'}"
+                # Fails open: the cooldown gate is an optimization, not a
+                # correctness requirement, so a raised exception here (a
+                # transient DB error, a locked SQLite file, anything) must
+                # never cost the RCA/remediation work already completed above.
+                # Proceed exactly as if the slot were free.
+                try:
+                    fingerprint = error_fingerprint(report_data, raw_log_lines)
+                    dedupe_key = f"{scope.project}/{scope.component}/{fingerprint or 'nofp'}"
+                    slot_free = await report_backend.try_acquire_handoff_slot(
+                        dedupe_key, settings.handoff_cooldown_seconds
+                    )
+                except Exception as e:
+                    logger.warning("Cooldown check failed, proceeding with handoff: %s", e)
+                    fingerprint = None
+                    slot_free = True
 
-                if not await report_backend.try_acquire_handoff_slot(
-                    dedupe_key, settings.handoff_cooldown_seconds
-                ):
+                if not slot_free:
+                    handoff_suppressed = True
                     logger.info(
                         "Handoff suppressed: cooldown active for dedupe key %s",
                         dedupe_key,
@@ -561,9 +579,7 @@ async def run_analysis(
                         # also what a legitimate "nothing to hand over" looks
                         # like, so a crash would read as a decision.
                         report_data["handoff"] = HandoffResult.failed(e).model_dump()
-                        logger.error(
-                            "Handoff agent failed, recorded on the RCA report: %s", e
-                        )
+                        logger.error("Handoff agent failed, recorded on the RCA report: %s", e)
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,
@@ -584,17 +600,31 @@ async def run_analysis(
             # point, so publishing is best-effort by construction: a sink that is
             # down or misconfigured must never cost the analysis.
             if sink := get_report_sink():
-                publish, skip_reason = should_publish_report(report_data)
-                if not publish:
-                    logger.info("Skipping report publish: %s", skip_reason)
+                if handoff_suppressed:
+                    # An earlier, very recent run already went through the
+                    # full handoff decision for this same incident and
+                    # published (or correctly skipped) accordingly. This
+                    # occurrence never reached should_publish_report's own
+                    # `deduped` check because it has no handoff result at
+                    # all — but it is the same situation that check exists
+                    # to handle, so it must not publish either.
+                    logger.info(
+                        "Skipping report publish: handoff suppressed by cooldown "
+                        "(an earlier run already handled this incident)"
+                    )
                 else:
-                    try:
-                        published_id = await sink.publish(report_data, get_oauth2_auth())
-                        logger.info("Published report to sink: id=%s", published_id)
-                    except Exception as e:
-                        logger.error(
-                            "Failed to publish report to sink (report stored locally): %s", e
-                        )
+                    publish, skip_reason = should_publish_report(report_data)
+                    if not publish:
+                        logger.info("Skipping report publish: %s", skip_reason)
+                    else:
+                        try:
+                            published_id = await sink.publish(report_data, get_oauth2_auth())
+                            logger.info("Published report to sink: id=%s", published_id)
+                        except Exception as e:
+                            logger.error(
+                                "Failed to publish report to sink (report stored locally): %s",
+                                e,
+                            )
 
         except asyncio.CancelledError:
             logger.warning("Analysis cancelled before completion")

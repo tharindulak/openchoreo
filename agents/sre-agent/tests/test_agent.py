@@ -377,10 +377,86 @@ async def test_run_analysis_skips_handoff_call_when_cooldown_active():
         await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
 
     handoff_create.assert_not_called()
-    saved = backend.upsert_rca_report.await_args.kwargs["report"]
+    kw = backend.upsert_rca_report.await_args.kwargs
+    saved = kw["report"]
     # RCAReport.handoff defaults to None and model_dump() always includes the
     # key, so a suppressed handoff is "handoff is None", not "key absent".
     assert saved["handoff"] is None
+    # The whole feature's central non-goal: RCA and remediation always run in
+    # full, unaffected by anything the cooldown gate does. A suppressed
+    # handoff must not read as a discarded analysis.
+    assert kw["status"] == "completed"
+    assert saved["summary"] == "Service was OOM-killed due to an undersized memory limit."
+    assert saved["result"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_fails_open_when_cooldown_check_raises():
+    """The cooldown gate is an optimization, not a correctness requirement. A
+    transient DB error (a locked SQLite file, a dropped connection, anything)
+    raised out of try_acquire_handoff_slot must not propagate to the outer
+    handler and discard the RCA/remediation work already completed — the
+    check fails open and the handoff proceeds as if the slot were free."""
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    patches = _patched_run(make_rca_report(), backend)
+
+    fake_handoff = MagicMock()
+    fake_handoff.ainvoke = AsyncMock(return_value={"messages": []})
+    handoff_create = AsyncMock(return_value=(fake_handoff, None))
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch.object(agent_module.HANDOFF_AGENT, "create", handoff_create),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    # Fail-open means proceed as if the slot were free: the handoff agent is
+    # still invoked.
+    handoff_create.assert_awaited_once()
+    kw = backend.upsert_rca_report.await_args.kwargs
+    assert kw["status"] == "completed"
+    assert kw["report"]["summary"] == "Service was OOM-killed due to an undersized memory limit."
+    assert kw["report"]["result"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_skips_sink_publish_when_cooldown_suppresses_handoff():
+    """A cooldown-suppressed occurrence is the same situation
+    ``should_publish_report``'s own `deduped` check exists to handle: an
+    earlier, very recent run already went through the full handoff decision
+    for this same incident. It must not publish either, even though
+    report_data["handoff"] is plain None here (not a dict with
+    deduped=True) — which is exactly the shape should_publish_report would
+    otherwise wave through."""
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=False)
+    patches = _patched_run(make_rca_report(), backend)
+
+    sink = MagicMock()
+    sink.publish = AsyncMock(return_value="row-1")
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch("src.agent.agent.get_report_sink", return_value=sink),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    sink.publish.assert_not_called()
 
 
 @pytest.mark.asyncio
