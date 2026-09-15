@@ -216,9 +216,7 @@ class SQLReportBackend(ReportBackend):
                 insert_stmt = pg_insert(handoff_cooldowns).values(
                     dedupe_key=dedupe_key, last_handoff_at=now_str
                 )
-            insert_stmt = insert_stmt.on_conflict_do_nothing(
-                index_elements=["dedupe_key"]
-            )
+            insert_stmt = insert_stmt.on_conflict_do_nothing(index_elements=["dedupe_key"])
             insert_result = await conn.execute(insert_stmt)
             return bool(insert_result.rowcount)
 

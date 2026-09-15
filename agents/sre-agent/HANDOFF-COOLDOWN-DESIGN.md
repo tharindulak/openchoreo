@@ -99,6 +99,14 @@ The cooldown is per-key, not global: a different fingerprint, a different
 component, or a different project each get an independent cooldown clock. An
 unrelated incident is never held back by another one cooling down.
 
+Accepted risk: when `error_fingerprint` returns `None` (no fingerprintable
+log lines or alert signature), the key degrades to `project/component/nofp`,
+so two genuinely distinct incidents on the same component that both yield no
+fingerprint would share one cooldown slot. This is accepted as low-risk — it
+is bounded to a delay of at most `cooldown_seconds`, not indefinite
+suppression, and requires the rare case of zero fingerprintable data — rather
+than something being fixed now.
+
 ---
 
 ## 4. Persistence and concurrency
@@ -157,8 +165,9 @@ hammering it with retries every time a new firing comes in.
 
 ## 5. Suppressed run's report
 
-`report_data["handoff"]` is simply left absent for a suppressed run —
-identical in shape to today's `handoff_enabled=False` case, or a
+`report_data["handoff"]` is present with value `None` for a suppressed run
+(`RCAReport.handoff` defaults to `None`, and `model_dump()` always emits the
+key) — identical in shape to today's `handoff_enabled=False` case, or a
 `RootCauseIdentified` check that fails. No new status value, no new field on
 `HandoffResult`, no console/UI change. The suppression is visible only via
 the `logger.info` line and, indirectly, the `handoff_cooldowns` table — this
@@ -224,7 +233,7 @@ than failing to start.
 - `cooldown_seconds=0` always returns `True`.
 - `run_analysis`: a second run within the cooldown window for the same
   `(project, component, fingerprint)` does not invoke `HANDOFF_AGENT` and
-  leaves `report_data["handoff"]` absent; RCA and remediation still ran and
+  leaves `report_data["handoff"]` as `None`; RCA and remediation still ran and
   were recorded.
 - A different fingerprint, component, or project within the same window is
   not suppressed.
