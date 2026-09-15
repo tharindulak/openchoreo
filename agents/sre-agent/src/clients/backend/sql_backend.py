@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,13 @@ rca_reports = Table(
     Index("idx_project_env", "project_uid", "environment_uid"),
     Index("idx_timestamp", "timestamp"),
     Index("idx_status", "status"),
+)
+
+handoff_cooldowns = Table(
+    "handoff_cooldowns",
+    metadata,
+    Column("dedupe_key", String, primary_key=True),
+    Column("last_handoff_at", String, nullable=False),  # ISO-8601, UTC
 )
 
 # Module-level singleton
@@ -175,6 +182,45 @@ class SQLReportBackend(ReportBackend):
             "totalCount": total_count,
             "tookMs": 0,
         }
+
+    async def try_acquire_handoff_slot(
+        self,
+        dedupe_key: str,
+        cooldown_seconds: int,
+    ) -> bool:
+        if cooldown_seconds <= 0:
+            return True
+
+        now = datetime.now(UTC)
+        cutoff = (now - timedelta(seconds=cooldown_seconds)).isoformat()
+        now_str = now.isoformat()
+
+        async with self.engine.begin() as conn:
+            update_stmt = (
+                handoff_cooldowns.update()
+                .where(
+                    handoff_cooldowns.c.dedupe_key == dedupe_key,
+                    handoff_cooldowns.c.last_handoff_at <= cutoff,
+                )
+                .values(last_handoff_at=now_str)
+            )
+            update_result = await conn.execute(update_stmt)
+            if update_result.rowcount:
+                return True
+
+            if self._is_sqlite:
+                insert_stmt = sqlite_insert(handoff_cooldowns).values(
+                    dedupe_key=dedupe_key, last_handoff_at=now_str
+                )
+            else:
+                insert_stmt = pg_insert(handoff_cooldowns).values(
+                    dedupe_key=dedupe_key, last_handoff_at=now_str
+                )
+            insert_stmt = insert_stmt.on_conflict_do_nothing(
+                index_elements=["dedupe_key"]
+            )
+            insert_result = await conn.execute(insert_stmt)
+            return bool(insert_result.rowcount)
 
     async def close(self) -> None:
         await self.engine.dispose()

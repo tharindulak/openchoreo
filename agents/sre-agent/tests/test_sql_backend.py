@@ -7,6 +7,7 @@ A temp-file database (not ``:memory:``) is used so the schema persists across
 the separate connections that ``initialize`` / ``get`` / ``list`` open.
 """
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -209,3 +210,47 @@ async def test_list_sort_order(backend):
     assert [r["reportId"] for r in desc["reports"]] == ["b", "a"]
     asc = await _list(backend, sort="asc")
     assert [r["reportId"] for r in asc["reports"]] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_first_call_succeeds(backend):
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_second_call_within_cooldown_fails(backend):
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is False
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_succeeds_again_after_cooldown_elapses(backend):
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is False
+    # A cooldown of 0 seconds elapses immediately, so the next call is
+    # already past its own window.
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 0) is True
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_zero_cooldown_always_succeeds(backend):
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 0) is True
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 0) is True
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_different_keys_are_independent(backend):
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
+    assert await backend.try_acquire_handoff_slot("p/c/fp2", 1800) is True
+    assert await backend.try_acquire_handoff_slot("p/other/fp1", 1800) is True
+
+
+@pytest.mark.asyncio
+async def test_try_acquire_handoff_slot_concurrent_calls_on_a_fresh_key_only_one_succeeds(
+    backend,
+):
+    results = await asyncio.gather(
+        backend.try_acquire_handoff_slot("p/c/fp1", 1800),
+        backend.try_acquire_handoff_slot("p/c/fp1", 1800),
+    )
+    assert sorted(results) == [False, True]
