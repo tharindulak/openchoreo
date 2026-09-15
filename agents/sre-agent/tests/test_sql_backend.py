@@ -8,13 +8,13 @@ the separate connections that ``initialize`` / ``get`` / ``list`` open.
 """
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from src.clients.backend.sql_backend import SQLReportBackend
+from src.clients.backend.sql_backend import SQLReportBackend, handoff_cooldowns
 
 WIDE_START = "2000-01-01T00:00:00+00:00"
 WIDE_END = "2100-01-01T00:00:00+00:00"
@@ -227,9 +227,20 @@ async def test_try_acquire_handoff_slot_second_call_within_cooldown_fails(backen
 async def test_try_acquire_handoff_slot_succeeds_again_after_cooldown_elapses(backend):
     assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
     assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is False
-    # A cooldown of 0 seconds elapses immediately, so the next call is
-    # already past its own window.
-    assert await backend.try_acquire_handoff_slot("p/c/fp1", 0) is True
+
+    # Directly age the stored stamp past the cooldown window (bypassing the
+    # public API) so this test genuinely drives execution through the
+    # `UPDATE ... WHERE last_handoff_at <= cutoff` expiry branch, rather than
+    # the `cooldown_seconds <= 0` fast path.
+    aged = (datetime.now(UTC) - timedelta(seconds=3600)).isoformat()
+    async with backend.engine.begin() as conn:
+        await conn.execute(
+            handoff_cooldowns.update()
+            .where(handoff_cooldowns.c.dedupe_key == "p/c/fp1")
+            .values(last_handoff_at=aged)
+        )
+
+    assert await backend.try_acquire_handoff_slot("p/c/fp1", 1800) is True
 
 
 @pytest.mark.asyncio
