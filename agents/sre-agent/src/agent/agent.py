@@ -490,65 +490,80 @@ async def run_analysis(
                         "recommended_actions"
                     ]
                 ]
-                try:
-                    logger.info("Running handoff agent")
-                    # Filled by the recorder with every tool call the stage
-                    # made; the caller reads the LAST one — the skill's own
-                    # constraint ("Creating that issue is your only write")
-                    # guarantees that is the filing call, without this code
-                    # needing to name it.
-                    tool_calls: list[dict[str, Any]] = []
-                    handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
-                        auth=get_oauth2_auth(),
-                        usage_callback=usage_callback,
-                        context={
-                            "scope": scope,
-                            "tool_call_log": tool_calls,
-                            # Every deterministic, model-independent fact this
-                            # run carries — incident identity and the action
-                            # statuses alike — rendered under whatever header
-                            # names deploy-time config maps them to. Out of the
-                            # model's reach: it never sees these values as
-                            # arguments it could restate.
-                            "handoff_headers": build_handoff_headers(
-                                {
-                                    "project": scope.project,
-                                    "component": scope.component,
-                                    "signature": error_fingerprint(report_data, raw_log_lines),
-                                    "action_statuses": action_statuses,
-                                },
-                                settings.handoff_header_map,
-                            ),
-                        },
-                    )
+                fingerprint = error_fingerprint(report_data, raw_log_lines)
+                dedupe_key = f"{scope.project}/{scope.component}/{fingerprint or 'nofp'}"
 
-                    # The full report: content-shaping (which sections matter,
-                    # what to exclude) is the skill's own instructions now, not
-                    # a Python filter — see coding-agent-handoff/SKILL.md.
-                    messages: list[dict[str, Any]] = [
-                        {"role": "user", "content": json.dumps(report_data)}
-                    ]
-                    await asyncio.wait_for(
-                        handoff_agent.ainvoke({"messages": messages}),
-                        timeout=settings.analysis_timeout_seconds,
-                    )
-
-                    outcome = tool_calls[-1] if tool_calls else None
-                    handoff_report = HandoffResult.compose(outcome)
-                    if handoff_logging and (summary_line := handoff_logging.tool_call_summary()):
-                        logger.debug("Handoff tool calls: %s", summary_line)
-                    report_data["handoff"] = handoff_report.model_dump()
+                if not await report_backend.try_acquire_handoff_slot(
+                    dedupe_key, settings.handoff_cooldown_seconds
+                ):
                     logger.info(
-                        "Handoff completed: tool=%s, result=%s",
-                        handoff_report.tool,
-                        handoff_report.result,
+                        "Handoff suppressed: cooldown active for dedupe key %s",
+                        dedupe_key,
                     )
-                except Exception as e:
-                    # Recorded, not just logged: an absent `handoff` key is
-                    # also what a legitimate "nothing to hand over" looks
-                    # like, so a crash would read as a decision.
-                    report_data["handoff"] = HandoffResult.failed(e).model_dump()
-                    logger.error("Handoff agent failed, recorded on the RCA report: %s", e)
+                else:
+                    try:
+                        logger.info("Running handoff agent")
+                        # Filled by the recorder with every tool call the stage
+                        # made; the caller reads the LAST one — the skill's own
+                        # constraint ("Creating that issue is your only write")
+                        # guarantees that is the filing call, without this code
+                        # needing to name it.
+                        tool_calls: list[dict[str, Any]] = []
+                        handoff_agent, handoff_logging = await HANDOFF_AGENT.create(
+                            auth=get_oauth2_auth(),
+                            usage_callback=usage_callback,
+                            context={
+                                "scope": scope,
+                                "tool_call_log": tool_calls,
+                                # Every deterministic, model-independent fact this
+                                # run carries — incident identity and the action
+                                # statuses alike — rendered under whatever header
+                                # names deploy-time config maps them to. Out of the
+                                # model's reach: it never sees these values as
+                                # arguments it could restate.
+                                "handoff_headers": build_handoff_headers(
+                                    {
+                                        "project": scope.project,
+                                        "component": scope.component,
+                                        "signature": fingerprint,
+                                        "action_statuses": action_statuses,
+                                    },
+                                    settings.handoff_header_map,
+                                ),
+                            },
+                        )
+
+                        # The full report: content-shaping (which sections matter,
+                        # what to exclude) is the skill's own instructions now, not
+                        # a Python filter — see coding-agent-handoff/SKILL.md.
+                        messages: list[dict[str, Any]] = [
+                            {"role": "user", "content": json.dumps(report_data)}
+                        ]
+                        await asyncio.wait_for(
+                            handoff_agent.ainvoke({"messages": messages}),
+                            timeout=settings.analysis_timeout_seconds,
+                        )
+
+                        outcome = tool_calls[-1] if tool_calls else None
+                        handoff_report = HandoffResult.compose(outcome)
+                        if handoff_logging and (
+                            summary_line := handoff_logging.tool_call_summary()
+                        ):
+                            logger.debug("Handoff tool calls: %s", summary_line)
+                        report_data["handoff"] = handoff_report.model_dump()
+                        logger.info(
+                            "Handoff completed: tool=%s, result=%s",
+                            handoff_report.tool,
+                            handoff_report.result,
+                        )
+                    except Exception as e:
+                        # Recorded, not just logged: an absent `handoff` key is
+                        # also what a legitimate "nothing to hand over" looks
+                        # like, so a crash would read as a decision.
+                        report_data["handoff"] = HandoffResult.failed(e).model_dump()
+                        logger.error(
+                            "Handoff agent failed, recorded on the RCA report: %s", e
+                        )
 
             response = await report_backend.upsert_rca_report(
                 report_id=report_id,

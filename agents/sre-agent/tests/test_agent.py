@@ -328,6 +328,7 @@ async def test_run_analysis_records_a_failed_handoff_on_the_report():
     # human hits while triaging, and it hides a broken skill mount.
     backend = MagicMock()
     backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=True)
     remed = make_remediation_result(
         recommended_actions=[make_remediation_action(status=ActionStatus.SUGGESTED)]
     )
@@ -353,6 +354,106 @@ async def test_run_analysis_records_a_failed_handoff_on_the_report():
     assert handoff["tool"] is None
     assert handoff["result"] is None
     assert "Skill 'x' not found" in handoff["failure_reason"]
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_skips_handoff_call_when_cooldown_active():
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=False)
+    patches = _patched_run(make_rca_report(), backend)
+
+    handoff_create = AsyncMock()
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch.object(agent_module.HANDOFF_AGENT, "create", handoff_create),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    handoff_create.assert_not_called()
+    saved = backend.upsert_rca_report.await_args.kwargs["report"]
+    # RCAReport.handoff defaults to None and model_dump() always includes the
+    # key, so a suppressed handoff is "handoff is None", not "key absent".
+    assert saved["handoff"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_calls_handoff_when_cooldown_slot_is_free():
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=True)
+    patches = _patched_run(make_rca_report(), backend)
+
+    handoff_create = AsyncMock(side_effect=RuntimeError("no skill"))
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch.object(agent_module.HANDOFF_AGENT, "create", handoff_create),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    handoff_create.assert_awaited_once()
+    saved = backend.upsert_rca_report.await_args.kwargs["report"]
+    # The key is always present (RCAReport.handoff defaults to None); what
+    # proves the handoff actually ran is that it's no longer None.
+    assert saved["handoff"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_dedupe_key_is_project_component_fingerprint():
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=False)
+    patches = _patched_run(make_rca_report(), backend)
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch.object(agent_module.settings, "handoff_cooldown_seconds", 900),
+        patch.object(agent_module, "error_fingerprint", return_value="deadbeef01"),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    backend.try_acquire_handoff_slot.assert_awaited_once_with("p/c/deadbeef01", 900)
+
+
+@pytest.mark.asyncio
+async def test_run_analysis_dedupe_key_falls_back_to_nofp_with_no_fingerprint():
+    backend = MagicMock()
+    backend.upsert_rca_report = AsyncMock(return_value={"result": "created"})
+    backend.try_acquire_handoff_slot = AsyncMock(return_value=False)
+    patches = _patched_run(make_rca_report(), backend)
+
+    with (
+        patches[0],
+        patches[1],
+        patches[2],
+        patches[3],
+        patches[4],
+        patches[5],
+        patch.object(agent_module.settings, "handoff_enabled", True),
+        patch.object(agent_module, "error_fingerprint", return_value=None),
+    ):
+        await run_analysis(report_id="r1", alert_id="a1", alert={"x": 1}, scope=SCOPE)
+
+    key = backend.try_acquire_handoff_slot.await_args.args[0]
+    assert key == "p/c/nofp"
 
 
 @pytest.mark.asyncio
