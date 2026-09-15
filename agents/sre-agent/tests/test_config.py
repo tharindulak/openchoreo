@@ -126,3 +126,11 @@ def test_handoff_header_map_parses_valid_json_from_env_var(monkeypatch):
     monkeypatch.setenv("HANDOFF_HEADER_MAP", '{"project": "X-AEP-Project"}')
     s = Settings()
     assert s.handoff_header_map == {"project": "X-AEP-Project"}
+
+
+def test_handoff_cooldown_seconds_defaults_to_thirty_minutes():
+    assert Settings().handoff_cooldown_seconds == 1800
+
+
+def test_handoff_cooldown_seconds_is_configurable():
+    assert Settings(handoff_cooldown_seconds=0).handoff_cooldown_seconds == 0

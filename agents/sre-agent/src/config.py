@@ -86,6 +86,14 @@ class Settings(CommonSettings):
     external_skills_dir: str = ""
     remed_agent: bool = False
     handoff_enabled: bool = False
+    # Minimum time between handoff (search+create) calls for the same
+    # project/component/fingerprint dedupe key — see
+    # HANDOFF-COOLDOWN-DESIGN.md. A flapping alert still runs full RCA every
+    # time; this only throttles the repeated round-trip to the handoff MCP
+    # server (and, through it, AE's GitHub API calls) for the same incident.
+    # 0 disables the gate: every call goes through, matching pre-cooldown
+    # behavior.
+    handoff_cooldown_seconds: int = 1800
     # Where completed reports go BESIDES report_backend — a downstream system
     # that wants to know an analysis finished (a platform console, a tracker, an
     # event bus). Empty means nowhere, which is the default: an agent publishes
