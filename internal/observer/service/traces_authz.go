@@ -9,6 +9,7 @@ import (
 
 	authzcore "github.com/openchoreo/openchoreo/internal/authz/core"
 	observerAuthz "github.com/openchoreo/openchoreo/internal/observer/authz"
+	"github.com/openchoreo/openchoreo/internal/observer/labels"
 	"github.com/openchoreo/openchoreo/internal/observer/types"
 )
 
@@ -64,18 +65,40 @@ func (s *tracesServiceWithAuthz) QuerySpans(ctx context.Context, traceID string,
 	return s.internal.QuerySpans(ctx, traceID, req)
 }
 
-func (s *tracesServiceWithAuthz) QuerySpanDetails(ctx context.Context, traceID string, spanID string, scope types.ComponentSearchScope) (*types.SpanInfo, error) {
-	resourceType, resourceName, hierarchy := observerAuthz.ComponentScopeAuthz(scope.Namespace, scope.Project, scope.Component)
+// GetSpanDetails authorizes on the return path: the request carries only traceID+spanID,
+// so the scope is derived from the fetched span's resource attributes and the span is
+// discarded if the caller is not authorized for it.
+func (s *tracesServiceWithAuthz) GetSpanDetails(ctx context.Context, traceID string, spanID string) (*types.SpanInfo, error) {
+	span, err := s.internal.GetSpanDetails(ctx, traceID, spanID)
+	if err != nil {
+		return nil, err
+	}
 
+	namespace := resourceAttrString(span.ResourceAttributes, labels.NamespaceName)
+	project := resourceAttrString(span.ResourceAttributes, labels.ProjectName)
+	component := resourceAttrString(span.ResourceAttributes, labels.ComponentName)
+	environment := resourceAttrString(span.ResourceAttributes, labels.EnvironmentName)
+
+	resourceType, resourceName, hierarchy := observerAuthz.ComponentScopeAuthz(namespace, project, component)
+	// TODO: currently the obs API is not equipped to provide cluster level environments,
+	// once that is done update false to proper isClusterScoped value.
 	if err := observerAuthz.CheckAuthorization(
 		ctx, s.logger, s.pdp,
 		observerAuthz.ActionViewTraces,
 		resourceType, resourceName, hierarchy,
 		authzcore.Context{Resource: authzcore.ResourceAttribute{
-			Environment: observerAuthz.FormatDualScopedResourceName(scope.Namespace, scope.Environment, false),
+			Environment: observerAuthz.FormatDualScopedResourceName(namespace, environment, false),
 		}},
 	); err != nil {
 		return nil, err
 	}
-	return s.internal.QuerySpanDetails(ctx, traceID, spanID, scope)
+	return span, nil
+}
+
+// resourceAttrString returns the string value for key, or "" if absent or not a string.
+func resourceAttrString(attrs map[string]interface{}, key string) string {
+	if v, ok := attrs[key].(string); ok {
+		return v
+	}
+	return ""
 }

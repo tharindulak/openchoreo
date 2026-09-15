@@ -8,7 +8,9 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/openchoreo/openchoreo/internal/auditconfig"
 	coreconfig "github.com/openchoreo/openchoreo/internal/config"
+	apiaudit "github.com/openchoreo/openchoreo/internal/openchoreo-api/audit"
 )
 
 // Config is the top-level configuration for openchoreo-api.
@@ -29,6 +31,8 @@ type Config struct {
 	ClusterGateway ClusterGatewayConfig `koanf:"cluster_gateway"`
 	// Audit defines audit logging settings.
 	Audit AuditConfig `koanf:"audit"`
+	// RemoteConnect defines the `occ remote` resolve endpoint settings.
+	RemoteConnect RemoteConnectConfig `koanf:"remote_connect"`
 }
 
 // Defaults returns the default configuration.
@@ -42,6 +46,7 @@ func Defaults() Config {
 		Logging:          LoggingDefaults(),
 		ClusterGateway:   ClusterGatewayDefaults(),
 		Audit:            AuditDefaults(),
+		RemoteConnect:    RemoteConnectDefaults(),
 	}
 }
 
@@ -96,7 +101,9 @@ func (c *Config) Validate() error {
 	errs = append(errs, c.MCP.ValidateMCPConfig(coreconfig.NewPath("mcp"))...)
 	errs = append(errs, c.Logging.Validate(coreconfig.NewPath("logging"))...)
 	errs = append(errs, c.ClusterGateway.Validate(coreconfig.NewPath("cluster_gateway"))...)
-	errs = append(errs, c.Audit.Validate(coreconfig.NewPath("audit"), c.Security.KnownActorTypes())...)
+	errs = append(errs, c.Audit.Validate(
+		coreconfig.NewPath("audit"), auditconfig.NewVocabulary(apiaudit.GetOperations()), c.Security.KnownActorTypes())...)
+	errs = append(errs, c.RemoteConnect.Validate(coreconfig.NewPath("remote_connect"))...)
 
 	return errs.OrNil()
 }

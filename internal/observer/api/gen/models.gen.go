@@ -15,72 +15,28 @@ const (
 	BearerAuthScopes = "BearerAuth.Scopes"
 )
 
-// Defines values for AlertRuleRequestConditionOperator.
+// Defines values for AlertRuleSeverity.
 const (
-	AlertRuleRequestConditionOperatorEq  AlertRuleRequestConditionOperator = "eq"
-	AlertRuleRequestConditionOperatorGt  AlertRuleRequestConditionOperator = "gt"
-	AlertRuleRequestConditionOperatorGte AlertRuleRequestConditionOperator = "gte"
-	AlertRuleRequestConditionOperatorLt  AlertRuleRequestConditionOperator = "lt"
-	AlertRuleRequestConditionOperatorLte AlertRuleRequestConditionOperator = "lte"
-	AlertRuleRequestConditionOperatorNeq AlertRuleRequestConditionOperator = "neq"
+	Critical AlertRuleSeverity = "critical"
+	Info     AlertRuleSeverity = "info"
+	Warning  AlertRuleSeverity = "warning"
 )
 
-// Defines values for AlertRuleRequestSourceMetric.
+// Defines values for AlertRuleConditionOperator.
 const (
-	AlertRuleRequestSourceMetricBudget      AlertRuleRequestSourceMetric = "budget"
-	AlertRuleRequestSourceMetricCpuUsage    AlertRuleRequestSourceMetric = "cpu_usage"
-	AlertRuleRequestSourceMetricMemoryUsage AlertRuleRequestSourceMetric = "memory_usage"
+	Eq  AlertRuleConditionOperator = "eq"
+	Gt  AlertRuleConditionOperator = "gt"
+	Gte AlertRuleConditionOperator = "gte"
+	Lt  AlertRuleConditionOperator = "lt"
+	Lte AlertRuleConditionOperator = "lte"
+	Neq AlertRuleConditionOperator = "neq"
 )
 
-// Defines values for AlertRuleRequestSourceType.
+// Defines values for AlertRuleSourceType.
 const (
-	AlertRuleRequestSourceTypeBudget AlertRuleRequestSourceType = "budget"
-	AlertRuleRequestSourceTypeLog    AlertRuleRequestSourceType = "log"
-	AlertRuleRequestSourceTypeMetric AlertRuleRequestSourceType = "metric"
-)
-
-// Defines values for AlertRuleResponseConditionOperator.
-const (
-	AlertRuleResponseConditionOperatorEq  AlertRuleResponseConditionOperator = "eq"
-	AlertRuleResponseConditionOperatorGt  AlertRuleResponseConditionOperator = "gt"
-	AlertRuleResponseConditionOperatorGte AlertRuleResponseConditionOperator = "gte"
-	AlertRuleResponseConditionOperatorLt  AlertRuleResponseConditionOperator = "lt"
-	AlertRuleResponseConditionOperatorLte AlertRuleResponseConditionOperator = "lte"
-	AlertRuleResponseConditionOperatorNeq AlertRuleResponseConditionOperator = "neq"
-)
-
-// Defines values for AlertRuleResponseSourceMetric.
-const (
-	AlertRuleResponseSourceMetricBudget      AlertRuleResponseSourceMetric = "budget"
-	AlertRuleResponseSourceMetricCpuUsage    AlertRuleResponseSourceMetric = "cpu_usage"
-	AlertRuleResponseSourceMetricMemoryUsage AlertRuleResponseSourceMetric = "memory_usage"
-)
-
-// Defines values for AlertRuleResponseSourceType.
-const (
-	AlertRuleResponseSourceTypeBudget AlertRuleResponseSourceType = "budget"
-	AlertRuleResponseSourceTypeLog    AlertRuleResponseSourceType = "log"
-	AlertRuleResponseSourceTypeMetric AlertRuleResponseSourceType = "metric"
-)
-
-// Defines values for AlertWebhookResponseStatus.
-const (
-	AlertWebhookResponseStatusError   AlertWebhookResponseStatus = "error"
-	AlertWebhookResponseStatusSuccess AlertWebhookResponseStatus = "success"
-)
-
-// Defines values for AlertingRuleSyncResponseAction.
-const (
-	Created   AlertingRuleSyncResponseAction = "created"
-	Deleted   AlertingRuleSyncResponseAction = "deleted"
-	Unchanged AlertingRuleSyncResponseAction = "unchanged"
-	Updated   AlertingRuleSyncResponseAction = "updated"
-)
-
-// Defines values for AlertingRuleSyncResponseStatus.
-const (
-	Failed AlertingRuleSyncResponseStatus = "failed"
-	Synced AlertingRuleSyncResponseStatus = "synced"
+	Budget AlertRuleSourceType = "budget"
+	Log    AlertRuleSourceType = "log"
+	Metric AlertRuleSourceType = "metric"
 )
 
 // Defines values for AlertsQueryRequestSortOrder.
@@ -89,28 +45,54 @@ const (
 	AlertsQueryRequestSortOrderDesc AlertsQueryRequestSortOrder = "desc"
 )
 
-// Defines values for AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator.
+// Defines values for AuditLogFilterValuesRequestFilter.
 const (
-	Eq  AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "eq"
-	Gt  AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "gt"
-	Gte AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "gte"
-	Lt  AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "lt"
-	Lte AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "lte"
-	Neq AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator = "neq"
+	Action              AuditLogFilterValuesRequestFilter = "action"
+	ActorEntitlements   AuditLogFilterValuesRequestFilter = "actor.entitlements"
+	ActorId             AuditLogFilterValuesRequestFilter = "actor.id"
+	ActorIssuer         AuditLogFilterValuesRequestFilter = "actor.issuer"
+	ActorSessionId      AuditLogFilterValuesRequestFilter = "actor.session_id"
+	ActorType           AuditLogFilterValuesRequestFilter = "actor.type"
+	Category            AuditLogFilterValuesRequestFilter = "category"
+	OperationId         AuditLogFilterValuesRequestFilter = "operation_id"
+	Producer            AuditLogFilterValuesRequestFilter = "producer"
+	ResourceComponent   AuditLogFilterValuesRequestFilter = "resource.component"
+	ResourceEnvironment AuditLogFilterValuesRequestFilter = "resource.environment"
+	ResourceName        AuditLogFilterValuesRequestFilter = "resource.name"
+	ResourceNamespace   AuditLogFilterValuesRequestFilter = "resource.namespace"
+	ResourceProject     AuditLogFilterValuesRequestFilter = "resource.project"
+	ResourceType        AuditLogFilterValuesRequestFilter = "resource.type"
+	Result              AuditLogFilterValuesRequestFilter = "result"
+	SourceIp            AuditLogFilterValuesRequestFilter = "source_ip"
+	Surface             AuditLogFilterValuesRequestFilter = "surface"
+	UserAgent           AuditLogFilterValuesRequestFilter = "user_agent"
 )
 
-// Defines values for AlertsQueryResponseAlertsMetadataAlertRuleSeverity.
+// Defines values for AuditLogsQueryRequestCategory.
 const (
-	Critical AlertsQueryResponseAlertsMetadataAlertRuleSeverity = "critical"
-	Info     AlertsQueryResponseAlertsMetadataAlertRuleSeverity = "info"
-	Warning  AlertsQueryResponseAlertsMetadataAlertRuleSeverity = "warning"
+	Access        AuditLogsQueryRequestCategory = "access"
+	Authorization AuditLogsQueryRequestCategory = "authorization"
+	Management    AuditLogsQueryRequestCategory = "management"
 )
 
-// Defines values for AlertsQueryResponseAlertsMetadataAlertRuleSourceType.
+// Defines values for AuditLogsQueryRequestResult.
 const (
-	Budget AlertsQueryResponseAlertsMetadataAlertRuleSourceType = "budget"
-	Log    AlertsQueryResponseAlertsMetadataAlertRuleSourceType = "log"
-	Metric AlertsQueryResponseAlertsMetadataAlertRuleSourceType = "metric"
+	Denied          AuditLogsQueryRequestResult = "denied"
+	Failure         AuditLogsQueryRequestResult = "failure"
+	Success         AuditLogsQueryRequestResult = "success"
+	Unauthenticated AuditLogsQueryRequestResult = "unauthenticated"
+)
+
+// Defines values for AuditLogsQueryRequestSortOrder.
+const (
+	AuditLogsQueryRequestSortOrderAsc  AuditLogsQueryRequestSortOrder = "asc"
+	AuditLogsQueryRequestSortOrderDesc AuditLogsQueryRequestSortOrder = "desc"
+)
+
+// Defines values for AuditLogsQueryRequestSurface.
+const (
+	Mcp  AuditLogsQueryRequestSurface = "mcp"
+	Rest AuditLogsQueryRequestSurface = "rest"
 )
 
 // Defines values for ErrorResponseTitle.
@@ -130,18 +112,11 @@ const (
 	EventsQueryRequestSortOrderDesc EventsQueryRequestSortOrder = "desc"
 )
 
-// Defines values for IncidentPutRequestStatus.
+// Defines values for IncidentStatus.
 const (
-	IncidentPutRequestStatusAcknowledged IncidentPutRequestStatus = "acknowledged"
-	IncidentPutRequestStatusActive       IncidentPutRequestStatus = "active"
-	IncidentPutRequestStatusResolved     IncidentPutRequestStatus = "resolved"
-)
-
-// Defines values for IncidentPutResponseStatus.
-const (
-	IncidentPutResponseStatusAcknowledged IncidentPutResponseStatus = "acknowledged"
-	IncidentPutResponseStatusActive       IncidentPutResponseStatus = "active"
-	IncidentPutResponseStatusResolved     IncidentPutResponseStatus = "resolved"
+	Acknowledged IncidentStatus = "acknowledged"
+	Active       IncidentStatus = "active"
+	Resolved     IncidentStatus = "resolved"
 )
 
 // Defines values for IncidentsQueryRequestSortOrder.
@@ -150,19 +125,12 @@ const (
 	IncidentsQueryRequestSortOrderDesc IncidentsQueryRequestSortOrder = "desc"
 )
 
-// Defines values for IncidentsQueryResponseIncidentsStatus.
-const (
-	Acknowledged IncidentsQueryResponseIncidentsStatus = "acknowledged"
-	Active       IncidentsQueryResponseIncidentsStatus = "active"
-	Resolved     IncidentsQueryResponseIncidentsStatus = "resolved"
-)
-
 // Defines values for LogsQueryRequestLogLevels.
 const (
-	DEBUG LogsQueryRequestLogLevels = "DEBUG"
-	ERROR LogsQueryRequestLogLevels = "ERROR"
-	INFO  LogsQueryRequestLogLevels = "INFO"
-	WARN  LogsQueryRequestLogLevels = "WARN"
+	LogsQueryRequestLogLevelsDEBUG LogsQueryRequestLogLevels = "DEBUG"
+	LogsQueryRequestLogLevelsERROR LogsQueryRequestLogLevels = "ERROR"
+	LogsQueryRequestLogLevelsINFO  LogsQueryRequestLogLevels = "INFO"
+	LogsQueryRequestLogLevelsWARN  LogsQueryRequestLogLevels = "WARN"
 )
 
 // Defines values for LogsQueryRequestSortOrder.
@@ -198,177 +166,140 @@ const (
 
 // Defines values for SpanStatusCode.
 const (
-	SpanStatusCodeError SpanStatusCode = "error"
-	SpanStatusCodeOk    SpanStatusCode = "ok"
-	SpanStatusCodeUnset SpanStatusCode = "unset"
+	Error SpanStatusCode = "error"
+	Ok    SpanStatusCode = "ok"
+	Unset SpanStatusCode = "unset"
 )
 
 // Defines values for TracesQueryRequestSortOrder.
 const (
-	Asc  TracesQueryRequestSortOrder = "asc"
-	Desc TracesQueryRequestSortOrder = "desc"
+	TracesQueryRequestSortOrderAsc  TracesQueryRequestSortOrder = "asc"
+	TracesQueryRequestSortOrderDesc TracesQueryRequestSortOrder = "desc"
 )
 
-// AlertRuleRequest defines model for AlertRuleRequest.
-type AlertRuleRequest struct {
-	Condition struct {
-		// Enabled Whether the alert rule is enabled
-		Enabled bool `json:"enabled"`
+// Defines values for PlatformLogFilterValuesFilter.
+const (
+	PlatformLogFilterValuesFilterClusterInstance PlatformLogFilterValuesFilter = "clusterInstance"
+	PlatformLogFilterValuesFilterContainerName   PlatformLogFilterValuesFilter = "containerName"
+	PlatformLogFilterValuesFilterNamespace       PlatformLogFilterValuesFilter = "namespace"
+	PlatformLogFilterValuesFilterPodName         PlatformLogFilterValuesFilter = "podName"
+)
 
-		// Interval The interval of time to query for the alert rule
-		Interval string `json:"interval"`
+// Defines values for PlatformLogsSortOrder.
+const (
+	PlatformLogsSortOrderAsc  PlatformLogsSortOrder = "asc"
+	PlatformLogsSortOrderDesc PlatformLogsSortOrder = "desc"
+)
 
-		// Operator The operator to use for the alert rule
-		Operator AlertRuleRequestConditionOperator `json:"operator"`
+// Defines values for GetPlatformLogsParamsLogLevels.
+const (
+	GetPlatformLogsParamsLogLevelsDEBUG GetPlatformLogsParamsLogLevels = "DEBUG"
+	GetPlatformLogsParamsLogLevelsERROR GetPlatformLogsParamsLogLevels = "ERROR"
+	GetPlatformLogsParamsLogLevelsINFO  GetPlatformLogsParamsLogLevels = "INFO"
+	GetPlatformLogsParamsLogLevelsWARN  GetPlatformLogsParamsLogLevels = "WARN"
+)
 
-		// Threshold The threshold value to use for the alert rule
-		Threshold float32 `json:"threshold"`
+// Defines values for GetPlatformLogsParamsSortOrder.
+const (
+	GetPlatformLogsParamsSortOrderAsc  GetPlatformLogsParamsSortOrder = "asc"
+	GetPlatformLogsParamsSortOrderDesc GetPlatformLogsParamsSortOrder = "desc"
+)
 
-		// Window The window of time to query for the alert rule
-		Window string `json:"window"`
-	} `json:"condition"`
-	Metadata struct {
-		// ComponentUid The OpenChoreo component UID to query
-		ComponentUid openapi_types.UUID `json:"componentUid"`
+// Defines values for GetPlatformLogFilterValuesParamsFilter.
+const (
+	GetPlatformLogFilterValuesParamsFilterClusterInstance GetPlatformLogFilterValuesParamsFilter = "clusterInstance"
+	GetPlatformLogFilterValuesParamsFilterContainerName   GetPlatformLogFilterValuesParamsFilter = "containerName"
+	GetPlatformLogFilterValuesParamsFilterNamespace       GetPlatformLogFilterValuesParamsFilter = "namespace"
+	GetPlatformLogFilterValuesParamsFilterPodName         GetPlatformLogFilterValuesParamsFilter = "podName"
+)
 
-		// EnvironmentUid The OpenChoreo environment UID to query
-		EnvironmentUid openapi_types.UUID `json:"environmentUid"`
+// Defines values for GetPlatformLogFilterValuesParamsLogLevels.
+const (
+	DEBUG GetPlatformLogFilterValuesParamsLogLevels = "DEBUG"
+	ERROR GetPlatformLogFilterValuesParamsLogLevels = "ERROR"
+	INFO  GetPlatformLogFilterValuesParamsLogLevels = "INFO"
+	WARN  GetPlatformLogFilterValuesParamsLogLevels = "WARN"
+)
 
-		// Name The name of the alert rule
-		Name string `json:"name"`
-
-		// Namespace The namespace of the alert rule CR
-		Namespace string `json:"namespace"`
-
-		// ProjectUid The OpenChoreo project UID to query
-		ProjectUid openapi_types.UUID `json:"projectUid"`
-	} `json:"metadata"`
-	Source struct {
-		// Metric The metric to query for metric based alerts
-		Metric *AlertRuleRequestSourceMetric `json:"metric,omitempty"`
-
-		// Query The query to execute for log based alerts
-		Query *string `json:"query,omitempty"`
-
-		// Type The type of the source
-		Type AlertRuleRequestSourceType `json:"type"`
-	} `json:"source"`
-}
-
-// AlertRuleRequestConditionOperator The operator to use for the alert rule
-type AlertRuleRequestConditionOperator string
-
-// AlertRuleRequestSourceMetric The metric to query for metric based alerts
-type AlertRuleRequestSourceMetric string
-
-// AlertRuleRequestSourceType The type of the source
-type AlertRuleRequestSourceType string
-
-// AlertRuleResponse defines model for AlertRuleResponse.
-type AlertRuleResponse struct {
-	Condition *struct {
-		// Enabled Whether the alert rule is enabled
-		Enabled *bool `json:"enabled,omitempty"`
-
-		// Interval The interval of time to query for the alert rule
-		Interval *string `json:"interval,omitempty"`
-
-		// Operator The operator to use for the alert rule
-		Operator *AlertRuleResponseConditionOperator `json:"operator,omitempty"`
-
-		// Threshold The threshold value to use for the alert rule
-		Threshold *float32 `json:"threshold,omitempty"`
-
-		// Window The window of time to query for the alert rule
-		Window *string `json:"window,omitempty"`
-	} `json:"condition,omitempty"`
-	Metadata *struct {
-		// ComponentUid The OpenChoreo component UID to query
-		ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
-
-		// EnvironmentUid The OpenChoreo environment UID to query
-		EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
-
-		// Name The name of the alert rule
-		Name *string `json:"name,omitempty"`
-
-		// Namespace The namespace of the alert rule CR
-		Namespace *string `json:"namespace,omitempty"`
-
-		// ProjectUid The OpenChoreo project UID to query
-		ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
-	} `json:"metadata,omitempty"`
-	Source *struct {
-		// Metric The metric to query for metric based alerts
-		Metric *AlertRuleResponseSourceMetric `json:"metric,omitempty"`
-
-		// Query The query to execute for log based alerts
-		Query *string `json:"query,omitempty"`
-
-		// Type The type of the source
-		Type *AlertRuleResponseSourceType `json:"type,omitempty"`
-	} `json:"source,omitempty"`
-}
-
-// AlertRuleResponseConditionOperator The operator to use for the alert rule
-type AlertRuleResponseConditionOperator string
-
-// AlertRuleResponseSourceMetric The metric to query for metric based alerts
-type AlertRuleResponseSourceMetric string
-
-// AlertRuleResponseSourceType The type of the source
-type AlertRuleResponseSourceType string
-
-// AlertWebhookRequest defines model for AlertWebhookRequest.
-type AlertWebhookRequest struct {
-	// AlertTimestamp The timestamp of the alert
-	AlertTimestamp *time.Time `json:"alertTimestamp,omitempty"`
+// Alert A single fired alert.
+type Alert struct {
+	// AlertId The alert ID
+	AlertId *string `json:"alertId,omitempty"`
 
 	// AlertValue The value of the alert
-	AlertValue *float32 `json:"alertValue,omitempty"`
+	AlertValue *string `json:"alertValue,omitempty"`
 
-	// RuleName The name of the alert rule
-	RuleName *string `json:"ruleName,omitempty"`
+	// IncidentEnabled Whether the alert rule is configured to trigger incidents when fired
+	IncidentEnabled *bool          `json:"incidentEnabled,omitempty"`
+	Metadata        *AlertMetadata `json:"metadata,omitempty"`
 
-	// RuleNamespace The namespace of the alert rule
-	RuleNamespace *string `json:"ruleNamespace,omitempty"`
+	// NotificationChannels The notification channels of the alert. Empty if failed to notify.
+	NotificationChannels *[]string `json:"notificationChannels,omitempty"`
+
+	// Timestamp The timestamp of the alert
+	Timestamp *time.Time `json:"timestamp,omitempty"`
 }
 
-// AlertWebhookResponse defines model for AlertWebhookResponse.
-type AlertWebhookResponse struct {
-	// Message The message of the alert webhook
-	Message *string `json:"message,omitempty"`
-
-	// Status The status of the alert webhook
-	Status *AlertWebhookResponseStatus `json:"status,omitempty"`
+// AlertMetadata defines model for AlertMetadata.
+type AlertMetadata struct {
+	// AlertRule The alert rule that produced the alert.
+	AlertRule *AlertRule      `json:"alertRule,omitempty"`
+	Labels    *ResourceLabels `json:"labels,omitempty"`
 }
 
-// AlertWebhookResponseStatus The status of the alert webhook
-type AlertWebhookResponseStatus string
+// AlertRule The alert rule that produced the alert.
+type AlertRule struct {
+	// Condition The condition configuration of the alert rule
+	Condition *AlertRuleCondition `json:"condition,omitempty"`
 
-// AlertingRuleSyncResponse defines model for AlertingRuleSyncResponse.
-type AlertingRuleSyncResponse struct {
-	// Action The action taken on the alert rule
-	Action *AlertingRuleSyncResponseAction `json:"action,omitempty"`
+	// Description The description of the alert rule
+	Description *string `json:"description,omitempty"`
 
-	// LastSyncedAt The timestamp of the last sync
-	LastSyncedAt *string `json:"lastSyncedAt,omitempty"`
+	// Name The name of the alert rule
+	Name *string `json:"name,omitempty"`
 
-	// RuleBackendId The backend ID (UID from observability backend) of the alert rule
-	RuleBackendId *string `json:"ruleBackendId,omitempty"`
+	// Severity The severity of the alert rule
+	Severity *AlertRuleSeverity `json:"severity,omitempty"`
 
-	// RuleLogicalId The logical ID (name) of the alert rule
-	RuleLogicalId *string `json:"ruleLogicalId,omitempty"`
-
-	// Status The status of the alert rule
-	Status *AlertingRuleSyncResponseStatus `json:"status,omitempty"`
+	// Source The source configuration of the alert rule
+	Source *AlertRuleSource `json:"source,omitempty"`
 }
 
-// AlertingRuleSyncResponseAction The action taken on the alert rule
-type AlertingRuleSyncResponseAction string
+// AlertRuleSeverity The severity of the alert rule
+type AlertRuleSeverity string
 
-// AlertingRuleSyncResponseStatus The status of the alert rule
-type AlertingRuleSyncResponseStatus string
+// AlertRuleCondition The condition configuration of the alert rule
+type AlertRuleCondition struct {
+	// Interval The evaluation interval (e.g. "1m", "5m")
+	Interval *string `json:"interval,omitempty"`
+
+	// Operator The comparison operator used for evaluation
+	Operator *AlertRuleConditionOperator `json:"operator,omitempty"`
+
+	// Threshold The threshold value that triggers the alert
+	Threshold *float32 `json:"threshold,omitempty"`
+
+	// Window The time window for aggregation (e.g. "5m", "1h")
+	Window *string `json:"window,omitempty"`
+}
+
+// AlertRuleConditionOperator The comparison operator used for evaluation
+type AlertRuleConditionOperator string
+
+// AlertRuleSource The source configuration of the alert rule
+type AlertRuleSource struct {
+	// Metric The metric used for metric-based alerts
+	Metric *string `json:"metric,omitempty"`
+
+	// Query The query used for log-based alerts
+	Query *string `json:"query,omitempty"`
+
+	// Type The type of the alert source
+	Type *AlertRuleSourceType `json:"type,omitempty"`
+}
+
+// AlertRuleSourceType The type of the alert source
+type AlertRuleSourceType string
 
 // AlertsQueryRequest defines model for AlertsQueryRequest.
 type AlertsQueryRequest struct {
@@ -392,83 +323,7 @@ type AlertsQueryRequestSortOrder string
 // AlertsQueryResponse defines model for AlertsQueryResponse.
 type AlertsQueryResponse struct {
 	// Alerts The list of alerts
-	Alerts *[]struct {
-		// AlertId The alert ID
-		AlertId *string `json:"alertId,omitempty"`
-
-		// AlertValue The value of the alert
-		AlertValue *string `json:"alertValue,omitempty"`
-
-		// IncidentEnabled Whether the alert rule is configured to trigger incidents when fired
-		IncidentEnabled *bool `json:"incidentEnabled,omitempty"`
-		Metadata        *struct {
-			AlertRule *struct {
-				// Condition The condition configuration of the alert rule
-				Condition *struct {
-					// Interval The evaluation interval (e.g. "1m", "5m")
-					Interval *string `json:"interval,omitempty"`
-
-					// Operator The comparison operator used for evaluation
-					Operator *AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator `json:"operator,omitempty"`
-
-					// Threshold The threshold value that triggers the alert
-					Threshold *float32 `json:"threshold,omitempty"`
-
-					// Window The time window for aggregation (e.g. "5m", "1h")
-					Window *string `json:"window,omitempty"`
-				} `json:"condition,omitempty"`
-
-				// Description The description of the alert rule
-				Description *string `json:"description,omitempty"`
-
-				// Name The name of the alert rule
-				Name *string `json:"name,omitempty"`
-
-				// Severity The severity of the alert rule
-				Severity *AlertsQueryResponseAlertsMetadataAlertRuleSeverity `json:"severity,omitempty"`
-
-				// Source The source configuration of the alert rule
-				Source *struct {
-					// Metric The metric used for metric-based alerts
-					Metric *string `json:"metric,omitempty"`
-
-					// Query The query used for log-based alerts
-					Query *string `json:"query,omitempty"`
-
-					// Type The type of the alert source
-					Type *AlertsQueryResponseAlertsMetadataAlertRuleSourceType `json:"type,omitempty"`
-				} `json:"source,omitempty"`
-			} `json:"alertRule,omitempty"`
-			Labels *struct {
-				// ComponentName The name of the component
-				ComponentName *string `json:"componentName,omitempty"`
-
-				// ComponentUid The UID of the component
-				ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
-
-				// EnvironmentName The name of the environment
-				EnvironmentName *string `json:"environmentName,omitempty"`
-
-				// EnvironmentUid The UID of the environment
-				EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
-
-				// NamespaceName The name of the namespace
-				NamespaceName *string `json:"namespaceName,omitempty"`
-
-				// ProjectName The name of the project
-				ProjectName *string `json:"projectName,omitempty"`
-
-				// ProjectUid The UID of the project
-				ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
-			} `json:"labels,omitempty"`
-		} `json:"metadata,omitempty"`
-
-		// NotificationChannels The notification channels of the alert. Empty if failed to notify.
-		NotificationChannels *[]string `json:"notificationChannels,omitempty"`
-
-		// Timestamp The timestamp of the alert
-		Timestamp *time.Time `json:"timestamp,omitempty"`
-	} `json:"alerts,omitempty"`
+	Alerts *[]Alert `json:"alerts,omitempty"`
 
 	// TookMs The time taken to query the alerts in milliseconds
 	TookMs *int `json:"tookMs,omitempty"`
@@ -477,14 +332,551 @@ type AlertsQueryResponse struct {
 	Total *int `json:"total,omitempty"`
 }
 
-// AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator The comparison operator used for evaluation
-type AlertsQueryResponseAlertsMetadataAlertRuleConditionOperator string
+// AuditLogActor Who performed the action. `id` is unique only within `issuer` — the same `sub`
+// from two identity providers is two different subjects.
+type AuditLogActor struct {
+	// Entitlements Entitlements carried on the token, when the issuer supplies any.
+	Entitlements *map[string][]string `json:"entitlements,omitempty"`
 
-// AlertsQueryResponseAlertsMetadataAlertRuleSeverity The severity of the alert rule
-type AlertsQueryResponseAlertsMetadataAlertRuleSeverity string
+	// Id The token's validated `sub` claim, or `anonymous`.
+	Id string `json:"id"`
 
-// AlertsQueryResponseAlertsMetadataAlertRuleSourceType The type of the alert source
-type AlertsQueryResponseAlertsMetadataAlertRuleSourceType string
+	// Issuer The token's `iss` claim; the namespace `id` is unique within.
+	Issuer *string `json:"issuer,omitempty"`
+
+	// SessionId The token's `sid` claim, joining this event to an identity-provider login.
+	SessionId *string `json:"session_id,omitempty"`
+
+	// Type e.g. `user`, `service_account`, `anonymous`.
+	Type string `json:"type"`
+}
+
+// AuditLogCollectorInfo Where the record was collected from, as stamped by the collector rather than by
+// the emitting service.
+//
+// Served so a client can compare it against `producer` — a record whose claimed
+// origin and collected origin disagree is worth looking at. The observer does not
+// perform that comparison or report its outcome; both values are returned and the
+// judgement is the caller's.
+type AuditLogCollectorInfo struct {
+	ContainerName *string `json:"containerName,omitempty"`
+	NamespaceName *string `json:"namespaceName,omitempty"`
+	PodName       *string `json:"podName,omitempty"`
+}
+
+// AuditLogFilterValue One value a filter takes, with how many records carry it.
+type AuditLogFilterValue struct {
+	// Count Matching records carrying this value, within the queried window. May be
+	// approximate on a high-cardinality filter where the backend answers from a
+	// partial term count, so treat it as an ordering hint and a sense of scale —
+	// never as an audit finding in its own right.
+	Count int64 `json:"count"`
+
+	// Value The value, exactly as it would be sent back as a filter.
+	Value string `json:"value"`
+}
+
+// AuditLogFilterValuesRequest Which filter to list values for, and the query to list them under.
+//
+// `query` is a full `AuditLogsQueryRequest`, in the same shape as a record
+// query — so a client sends the query it already holds rather than rebuilding
+// it.
+//
+// **The time window lives in `query`, and it is required.** `query.startTime`
+// and `query.endTime` are mandatory on `AuditLogsQueryRequest`, so every call
+// here is scoped to a period and there is no way to ask for the distinct values
+// across all of history — which on a trail with years of retention is not a
+// question any backend should be asked. Values are the ones reachable in that
+// window, exactly as the records are.
+//
+// The other filters in `query` narrow which records the values are drawn from,
+// except the one named by `filter`, whose own selections are ignored.
+//
+// `query.limit`, `query.sortOrder`, `query.includeTimeline` and
+// `query.timelineInterval` carry no meaning here: no records are returned, so
+// there is nothing to page, order or bucket. They are accepted and ignored
+// rather than rejected, so a client can pass its query through untouched.
+type AuditLogFilterValuesRequest struct {
+	// Filter The filter to list values for, named by its path in
+	// `AuditLogsQueryRequest` — `actor.id` lists the values that filter accepts.
+	//
+	// `event_id` and `request_id` are absent: both are near-unique per record, so
+	// a list of them is not something a client picks from — they are filtered by
+	// an exact value the client already holds, from a log line or another record.
+	// `actor.session_id` is present despite being near-unique too, because
+	// `valueSearch` makes it reachable: an investigator narrowing to one session
+	// has a prefix to type, which is not true of a UUID they have never seen.
+	Filter AuditLogFilterValuesRequestFilter `json:"filter"`
+
+	// MaxValues The maximum number of values to return, ordered by `count` descending then
+	// `value` ascending — so a truncated list holds the busiest values.
+	//
+	// `minimum` and `maximum` state the range a client should send. The observer
+	// itself clamps rather than rejects an out-of-range value — above the maximum
+	// to the maximum, at or below zero to the default — because a picker
+	// repopulates on every keystroke and a `400` would break the control instead
+	// of correcting it, while `totalValues` already reports what the cap left out.
+	// That leniency is the observer's alone: an intermediary validating against
+	// this schema may reject an out-of-range value before it ever arrives, so do
+	// not rely on it.
+	//
+	// Named `maxValues` rather than `limit` to keep it distinct from
+	// `query.limit`, which is a page size for records and is ignored here.
+	MaxValues *int `json:"maxValues,omitempty"`
+
+	// Query A filter set over the audit trail, shaped like the record it filters. Every
+	// filter is named and nested exactly as the field it matches in
+	// `AuditLogRecord` — `actor.id` filters `actor.id` — so a client needs no
+	// translation table in either direction, and a filter picker built from the
+	// record's own field paths maps onto this body mechanically.
+	//
+	// That is why the record-derived filters keep the record's snake_case spelling
+	// (`operation_id`, `request_id`, `source_ip`) while the query's own controls stay
+	// camelCase (`startTime`, `searchPhrase`, `limit`, `includeTimeline`). The two
+	// casings mark the two kinds of field: one names something in the trail, the
+	// other names something about this request.
+	//
+	// Multi-value fields OR within a field; fields AND with each other. An absent
+	// field is not a filter.
+	//
+	// The tenancy filters under `resource` narrow the result set and nothing else.
+	// Authorization is evaluated at cluster scope before any of them is read, so
+	// naming a namespace here does not entitle the caller to that namespace's trail.
+	//
+	// Two record fields have no filter. `resource.uid` is absent on deletes and on
+	// non-CRUD mutations, so filtering by it would silently exclude the operations an
+	// investigation most often wants — filter by `resource.name` and read `uid` off
+	// the returned record. `resource.resource`, the fourth hierarchy level, is set
+	// only where it duplicates `resource.name` today, so a filter for it would be a
+	// second spelling of one already here.
+	Query AuditLogsQueryRequest `json:"query"`
+
+	// ValueSearch Return only values containing this text, case-insensitively. This is how a
+	// picker narrows as its user types, and it is what makes a high-cardinality
+	// filter usable at all: `actor.id` on a large deployment has more distinct
+	// values than any list should offer, and typing three characters cuts it to
+	// something choosable.
+	//
+	// Distinct from `query.searchPhrase`, which narrows the *records* considered.
+	// This narrows the *values* returned from those records.
+	ValueSearch *string `json:"valueSearch,omitempty"`
+}
+
+// AuditLogFilterValuesRequestFilter The filter to list values for, named by its path in
+// `AuditLogsQueryRequest` — `actor.id` lists the values that filter accepts.
+//
+// `event_id` and `request_id` are absent: both are near-unique per record, so
+// a list of them is not something a client picks from — they are filtered by
+// an exact value the client already holds, from a log line or another record.
+// `actor.session_id` is present despite being near-unique too, because
+// `valueSearch` makes it reachable: an investigator narrowing to one session
+// has a prefix to type, which is not true of a UUID they have never seen.
+type AuditLogFilterValuesRequestFilter string
+
+// AuditLogFilterValuesResponse defines model for AuditLogFilterValuesResponse.
+type AuditLogFilterValuesResponse struct {
+	// Filter The filter these values belong to, echoed from the request so a client
+	// handling several pickers can match a response to the one that asked.
+	Filter string `json:"filter"`
+
+	// TookMs The time taken to compute the values in milliseconds.
+	TookMs int64 `json:"tookMs"`
+
+	// TotalValues How many distinct values match, of which at most `maxValues` were returned.
+	// This is what lets a picker say "412 more values, keep typing to narrow"
+	// rather than silently ending its list.
+	TotalValues int64 `json:"totalValues"`
+
+	// Values The distinct values, ordered by `count` descending then `value` ascending.
+	//
+	// Values on which the field is absent are not represented: there is no
+	// empty-string entry, because there is no filter value that would select one.
+	// A denial that resolved no operation contributes to no `resource.name` value
+	// at all rather than to an empty one.
+	Values []AuditLogFilterValue `json:"values"`
+}
+
+// AuditLogHTTPInfo The request line, for an event that arrived over HTTP. Absent for an MCP
+// `tools/call`, which has none.
+type AuditLogHTTPInfo struct {
+	Method *string `json:"method,omitempty"`
+
+	// Path Route path only; query strings are not recorded.
+	Path *string `json:"path,omitempty"`
+}
+
+// AuditLogRecord One audit event, in the field names and nesting it was published with. Keys are
+// snake_case here while the surrounding envelope is camelCase, and that is
+// deliberate: this is the frozen, versioned record a SIEM already consumes, so a
+// response body can be compared against an exported log line key for key rather
+// than through a translation table.
+//
+// `category` and `result` are plain strings rather than enums, unlike their
+// request-side counterparts: a filter is a closed input the server validates, while
+// a record's vocabulary grows with `schema_version`, and a closed enum here would
+// make an older client reject a newer record.
+type AuditLogRecord struct {
+	// Action Semantic action name.
+	Action string `json:"action"`
+
+	// Actor Who performed the action. `id` is unique only within `issuer` — the same `sub`
+	// from two identity providers is two different subjects.
+	Actor AuditLogActor `json:"actor"`
+
+	// Category Event category. `management`, `authorization` or `access` at schema 1.0.
+	Category string `json:"category"`
+
+	// Collector Where the record was collected from, as stamped by the collector rather than by
+	// the emitting service.
+	//
+	// Served so a client can compare it against `producer` — a record whose claimed
+	// origin and collected origin disagree is worth looking at. The observer does not
+	// perform that comparison or report its outcome; both values are returned and the
+	// judgement is the caller's.
+	Collector *AuditLogCollectorInfo `json:"collector,omitempty"`
+
+	// EventId UUID v7, unique per record.
+	EventId string `json:"event_id"`
+
+	// EventTime When the audited request was received.
+	EventTime time.Time `json:"event_time"`
+
+	// Http The request line, for an event that arrived over HTTP. Absent for an MCP
+	// `tools/call`, which has none.
+	Http *AuditLogHTTPInfo `json:"http,omitempty"`
+
+	// Metadata Operation-specific detail, when the emitting handler recorded any.
+	Metadata *map[string]interface{} `json:"metadata,omitempty"`
+
+	// OperationId Canonical operation identifier.
+	OperationId *string `json:"operation_id,omitempty"`
+
+	// Producer Emitting service.
+	Producer *string `json:"producer,omitempty"`
+
+	// RequestId Correlates this record with the access log line for the same request.
+	RequestId *string `json:"request_id,omitempty"`
+
+	// Resource The target resource, and the point in OpenChoreo's tree the decision was
+	// authorized at. Absent on a rejection that resolved no operation.
+	Resource *AuditLogResource `json:"resource,omitempty"`
+
+	// Result Outcome. `success`, `failure`, `denied` (an authenticated subject refused by
+	// policy) or `unauthenticated` (no subject at all) at schema 1.0.
+	Result string `json:"result"`
+
+	// SchemaVersion Schema of this record. `major.minor`; major on a field removal or a changed
+	// value representation, minor on an addition.
+	SchemaVersion string `json:"schema_version"`
+
+	// SourceIp Client address the request arrived from.
+	SourceIp *string `json:"source_ip,omitempty"`
+
+	// Surface Which surface of the API the call arrived through. `rest` or `mcp` at
+	// schema 1.0 — MCP wraps the same API, so the REST value is not `api`.
+	Surface *string `json:"surface,omitempty"`
+
+	// UserAgent Client-supplied and unverifiable, like `source_ip`. It is the only field
+	// that separates a portal session from occ, CI or an agent, which is what
+	// makes it worth recording despite being unverifiable.
+	UserAgent *string `json:"user_agent,omitempty"`
+}
+
+// AuditLogResource The target resource, and the point in OpenChoreo's tree the decision was
+// authorized at. Absent on a rejection that resolved no operation.
+type AuditLogResource struct {
+	Component *string `json:"component,omitempty"`
+
+	// Environment Dual-scoped `{namespace}/{name}`, as authorization evaluated it.
+	Environment *string                 `json:"environment,omitempty"`
+	Metadata    *map[string]interface{} `json:"metadata,omitempty"`
+	Name        *string                 `json:"name,omitempty"`
+	Namespace   *string                 `json:"namespace,omitempty"`
+	Project     *string                 `json:"project,omitempty"`
+	Resource    *string                 `json:"resource,omitempty"`
+	Type        *string                 `json:"type,omitempty"`
+
+	// Uid Server-generated identifier that is never reused. Absent when the operation
+	// returned no object — a delete, or a non-CRUD mutation.
+	Uid *string `json:"uid,omitempty"`
+}
+
+// AuditLogTimeline Per-interval counts across the queried window, broken down by `result`.
+//
+// Present only when `includeTimeline=true`, and omitted rather than empty when
+// the adapter backing this observer cannot compute it — a client must treat an
+// absent `timeline` as "unknown", not as "no activity in this window".
+type AuditLogTimeline struct {
+	// Buckets One entry per interval, in ascending `startTime` order regardless of the
+	// query's `sortOrder` — a timeline reads left to right whichever way the
+	// records are paged.
+	//
+	// **Buckets with no records are present with zero counts, not omitted.** The
+	// array covers the whole window from `startTime` to `endTime` contiguously.
+	// A sparse array would let a client draw a continuous chart across a gap in
+	// activity, which is the same class of mistake as answering an unimplemented
+	// query with an empty `200`: it reports quiet as if it were nothing to
+	// report. The final bucket may be shorter than `interval` where the window
+	// does not divide evenly.
+	Buckets []AuditLogTimelineBucket `json:"buckets"`
+
+	// Interval The bucket width actually used, which is not necessarily the requested
+	// `timelineInterval`: a width that would exceed 500 buckets is coarsened.
+	// Read the width from here, and label the chart from here.
+	Interval string `json:"interval"`
+}
+
+// AuditLogTimelineBucket One interval of the timeline.
+type AuditLogTimelineBucket struct {
+	// Counts Records in this bucket by `result`, keyed by the value itself — `success`,
+	// `failure`, `denied` and `unauthenticated` at schema 1.0. An open map rather
+	// than four declared fields, so a `result` value added in a later schema
+	// appears here without a spec bump.
+	//
+	// **A result with no records in this bucket may be omitted, and an absent key
+	// means zero.** A client renders the full set of results it knows about and
+	// reads a missing key as 0.
+	Counts *map[string]int64 `json:"counts,omitempty"`
+
+	// StartTime Inclusive lower bound of the bucket. Its width is `interval`.
+	StartTime time.Time `json:"startTime"`
+
+	// Total Records in this bucket. Equals the sum of `counts` — carried separately so
+	// a client can draw a total without walking the breakdown, and so a bucket
+	// whose breakdown the backend could not produce still reports a height.
+	Total int64 `json:"total"`
+}
+
+// AuditLogsActorFilter Filters on the record's `actor` group. Named and nested as the record is, so
+// `actor.id` here filters `actor.id` there.
+type AuditLogsActorFilter struct {
+	// Entitlements Entitlement values, e.g. a group name. Matched against the values of every
+	// claim in the record's `actor.entitlements` map rather than one named claim,
+	// because the claim key varies by subject kind — `groups` for a user, `sub`
+	// for a service account — and a caller asking "what did everyone in
+	// `platform-engineer` do" should not have to know which.
+	Entitlements *[]string `json:"entitlements,omitempty"`
+
+	// Id Subject identifiers. An `id` is unique only within an `issuer`, so on a
+	// deployment with more than one identity provider this should be paired with
+	// `issuer` — filtering on `id` alone would conflate two different subjects
+	// that happen to share a `sub`.
+	Id *[]string `json:"id,omitempty"`
+
+	// Issuer Token issuers — the namespace an `id` is unique within. On a single-issuer
+	// deployment this is one value and filtering on it is redundant; on a
+	// multi-issuer one it is what makes an `id` filter mean one subject.
+	Issuer *[]string `json:"issuer,omitempty"`
+
+	// SessionId Identity-provider session identifiers, from the token's `sid` claim. This
+	// is what joins every action taken in one login into a single sequence.
+	//
+	// Present for interactive logins and absent for client-credentials tokens,
+	// since OIDC leaves `sid` optional — so a session filter selects human
+	// activity and silently excludes service accounts.
+	SessionId *[]string `json:"session_id,omitempty"`
+
+	// Type Kinds of subject, e.g. `user`, `service_account`, `anonymous`.
+	Type *[]string `json:"type,omitempty"`
+}
+
+// AuditLogsQueryRequest A filter set over the audit trail, shaped like the record it filters. Every
+// filter is named and nested exactly as the field it matches in
+// `AuditLogRecord` — `actor.id` filters `actor.id` — so a client needs no
+// translation table in either direction, and a filter picker built from the
+// record's own field paths maps onto this body mechanically.
+//
+// That is why the record-derived filters keep the record's snake_case spelling
+// (`operation_id`, `request_id`, `source_ip`) while the query's own controls stay
+// camelCase (`startTime`, `searchPhrase`, `limit`, `includeTimeline`). The two
+// casings mark the two kinds of field: one names something in the trail, the
+// other names something about this request.
+//
+// Multi-value fields OR within a field; fields AND with each other. An absent
+// field is not a filter.
+//
+// The tenancy filters under `resource` narrow the result set and nothing else.
+// Authorization is evaluated at cluster scope before any of them is read, so
+// naming a namespace here does not entitle the caller to that namespace's trail.
+//
+// Two record fields have no filter. `resource.uid` is absent on deletes and on
+// non-CRUD mutations, so filtering by it would silently exclude the operations an
+// investigation most often wants — filter by `resource.name` and read `uid` off
+// the returned record. `resource.resource`, the fourth hierarchy level, is set
+// only where it duplicates `resource.name` today, so a filter for it would be a
+// second spelling of one already here.
+type AuditLogsQueryRequest struct {
+	// Action Semantic action names.
+	Action *[]string `json:"action,omitempty"`
+
+	// Actor Filters on the record's `actor` group. Named and nested as the record is, so
+	// `actor.id` here filters `actor.id` there.
+	Actor *AuditLogsActorFilter `json:"actor,omitempty"`
+
+	// Category Event categories. A closed set: an unknown value is a `400` rather than a
+	// filter that silently matches nothing.
+	//
+	// `access` is what separates disclosure from change — reading the trail is
+	// recorded under it, so filtering it out leaves only the operations that
+	// altered something.
+	Category *[]AuditLogsQueryRequestCategory `json:"category,omitempty"`
+
+	// EndTime Exclusive upper bound of the event window (RFC 3339, absolute UTC). Must be
+	// strictly greater than startTime, and within 366 days of it.
+	EndTime time.Time `json:"endTime"`
+
+	// EventId Record identifiers, for fetching known records directly.
+	EventId *[]string `json:"event_id,omitempty"`
+
+	// IncludeTimeline Also return per-interval counts across the queried window, broken down by
+	// `result`. See `AuditLogTimeline`.
+	//
+	// No page of records can be bucketed into a timeline — a page is the newest
+	// or oldest `limit` records, not a sample of the window — so a client that
+	// wants a histogram has to ask for one.
+	//
+	// Opt-in because it costs an aggregation pass on top of the search, and the
+	// answer describes the query rather than the page: a client walking the window
+	// should request it on the first page only, since it does not change as the
+	// window narrows.
+	//
+	// There is deliberately no companion flag for filter values — the distinct
+	// values each filter can take under the query. Those need one aggregation per
+	// filter rather than one in total, which on a busy trail is enough load to
+	// matter on every keystroke that changes a query. They have their own
+	// operation, `POST /api/v1alpha1/audit-logs/filter-values`, where a client
+	// asks for one filter's values at a time and the cost stays proportional to
+	// what it actually needs.
+	IncludeTimeline *bool `json:"includeTimeline,omitempty"`
+
+	// Limit The maximum number of records to return.
+	Limit *int `json:"limit,omitempty"`
+
+	// OperationId Canonical operation identifiers.
+	OperationId *[]string `json:"operation_id,omitempty"`
+
+	// Producer Emitting services.
+	Producer *[]string `json:"producer,omitempty"`
+
+	// RequestId Correlation IDs. This is the pivot from an access log line to the audit
+	// record for the same request, so it takes exact IDs rather than a prefix.
+	RequestId *[]string `json:"request_id,omitempty"`
+
+	// Resource Filters on the record's `resource` group — the target of the action and the
+	// point in OpenChoreo's tree the decision was authorized at. Named and nested as
+	// the record is.
+	//
+	// These are filters, not scopes: see `AuditLogsQueryRequest`.
+	Resource *AuditLogsResourceFilter `json:"resource,omitempty"`
+
+	// Result Outcomes. Closed, for the same reason as `category`.
+	Result *[]AuditLogsQueryRequestResult `json:"result,omitempty"`
+
+	// SearchPhrase Free text to match within the record.
+	SearchPhrase *string `json:"searchPhrase,omitempty"`
+
+	// SortOrder Sort direction on the event time.
+	SortOrder *AuditLogsQueryRequestSortOrder `json:"sortOrder,omitempty"`
+
+	// SourceIp Client addresses. Matched exactly, not by network range — a CIDR filter is
+	// not offered because the recorded value is whatever the request arrived
+	// with, which behind a proxy is the proxy.
+	SourceIp *[]string `json:"source_ip,omitempty"`
+
+	// StartTime Inclusive lower bound of the event window (RFC 3339, absolute UTC).
+	//
+	// The window may span at most 366 days; a wider one is a `400`. Longer than
+	// the log endpoints allow, because the audit trail keeps its own retention and
+	// an annual review is an ordinary query — but still bounded, so page a
+	// multi-year investigation a year at a time.
+	StartTime time.Time `json:"startTime"`
+
+	// Surface Surfaces of the API the call arrived through. Closed. MCP wraps the same
+	// API, so the REST value is `rest` rather than `api`.
+	Surface *[]AuditLogsQueryRequestSurface `json:"surface,omitempty"`
+
+	// TimelineInterval Bucket width for `timeline`, in `<count><unit>` notation where unit is one
+	// of `m` (minutes), `h` (hours), `d` (days) or `w` (weeks) — for example
+	// `15m`, `2h`, `1d`. Extends the `<count><unit>` convention used elsewhere in
+	// this spec with `m`, since a one-hour window wants minute buckets.
+	//
+	// Ignored unless `includeTimeline` is true. Defaults to a width the adapter
+	// chooses from the window when omitted.
+	//
+	// A width that would produce more than 500 buckets is **coarsened rather than
+	// rejected**, and `timeline.interval` reports what was actually used — always
+	// read the width back from there rather than assuming the request was honoured.
+	TimelineInterval *string `json:"timelineInterval,omitempty"`
+
+	// UserAgent Client identifications, matched exactly. Free-text agent strings vary by
+	// version, so `searchPhrase` is usually the better tool for "anything occ"
+	// — this filter is for pinning down one exact agent.
+	UserAgent *[]string `json:"user_agent,omitempty"`
+}
+
+// AuditLogsQueryRequestCategory defines model for AuditLogsQueryRequest.Category.
+type AuditLogsQueryRequestCategory string
+
+// AuditLogsQueryRequestResult defines model for AuditLogsQueryRequest.Result.
+type AuditLogsQueryRequestResult string
+
+// AuditLogsQueryRequestSortOrder Sort direction on the event time.
+type AuditLogsQueryRequestSortOrder string
+
+// AuditLogsQueryRequestSurface defines model for AuditLogsQueryRequest.Surface.
+type AuditLogsQueryRequestSurface string
+
+// AuditLogsResourceFilter Filters on the record's `resource` group — the target of the action and the
+// point in OpenChoreo's tree the decision was authorized at. Named and nested as
+// the record is.
+//
+// These are filters, not scopes: see `AuditLogsQueryRequest`.
+type AuditLogsResourceFilter struct {
+	// Component Components.
+	Component *[]string `json:"component,omitempty"`
+
+	// Environment Environments in the dual-scoped `{namespace}/{name}` form, because that is
+	// how the value is stored — recorded exactly as authorization evaluated it. A
+	// bare environment name will not match.
+	Environment *[]string `json:"environment,omitempty"`
+
+	// Name Resource names, as the handler recorded them.
+	Name *[]string `json:"name,omitempty"`
+
+	// Namespace OpenChoreo namespaces.
+	Namespace *[]string `json:"namespace,omitempty"`
+
+	// Project Projects.
+	Project *[]string `json:"project,omitempty"`
+
+	// Type Resource kinds.
+	Type *[]string `json:"type,omitempty"`
+}
+
+// AuditLogsResponse defines model for AuditLogsResponse.
+type AuditLogsResponse struct {
+	// Records Audit records matching the query, in `sortOrder` of `event_time`.
+	Records []AuditLogRecord `json:"records"`
+
+	// Timeline Per-interval counts across the queried window, broken down by `result`.
+	//
+	// Present only when `includeTimeline=true`, and omitted rather than empty when
+	// the adapter backing this observer cannot compute it — a client must treat an
+	// absent `timeline` as "unknown", not as "no activity in this window".
+	Timeline *AuditLogTimeline `json:"timeline,omitempty"`
+
+	// TookMs The time taken to query the audit logs in milliseconds.
+	TookMs int64 `json:"tookMs"`
+
+	// Total Exact number of records matching the query across the whole window, not the
+	// number returned — `records` holds at most `limit` of them. Compare the two to
+	// tell whether the window holds more than one page.
+	//
+	// Exact, not an estimate: a backend that caps hit counting by default must be
+	// configured to count fully. An audit consumer reading an understated total
+	// draws the wrong conclusion about how much happened.
+	Total int64 `json:"total"`
+}
 
 // ComponentCost defines model for ComponentCost.
 type ComponentCost struct {
@@ -520,51 +912,6 @@ type ComponentCost struct {
 
 	// StartTime Inclusive start of the window this record covers.
 	StartTime time.Time `json:"startTime"`
-}
-
-// ComponentLogEntry defines model for ComponentLogEntry.
-type ComponentLogEntry struct {
-	// Level The log level
-	Level *string `json:"level,omitempty"`
-
-	// Log The log message
-	Log *string `json:"log,omitempty"`
-
-	// Metadata The metadata of the log entry
-	Metadata *struct {
-		// ComponentName The OpenChoreo component name that generated the log
-		ComponentName *string `json:"componentName,omitempty"`
-
-		// ComponentUid The OpenChoreo component UID that generated the log
-		ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
-
-		// ContainerName The container name that generated the log
-		ContainerName *string `json:"containerName,omitempty"`
-
-		// EnvironmentName The OpenChoreo environment name that generated the log
-		EnvironmentName *string `json:"environmentName,omitempty"`
-
-		// EnvironmentUid The OpenChoreo environment UID that generated the log
-		EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
-
-		// NamespaceName The OpenChoreo namespace name that generated the log
-		NamespaceName *string `json:"namespaceName,omitempty"`
-
-		// PodName The Kubernetes pod name that generated the log
-		PodName *string `json:"podName,omitempty"`
-
-		// PodNamespace The namespace of the Kubernetes pod that generated the log
-		PodNamespace *string `json:"podNamespace,omitempty"`
-
-		// ProjectName The OpenChoreo project name that generated the log
-		ProjectName *string `json:"projectName,omitempty"`
-
-		// ProjectUid The OpenChoreo project UID that generated the log
-		ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
-	} `json:"metadata,omitempty"`
-
-	// Timestamp The timestamp of the log entry
-	Timestamp *time.Time `json:"timestamp,omitempty"`
 }
 
 // ComponentRecommendation defines model for ComponentRecommendation.
@@ -719,6 +1066,43 @@ type HttpMetricsTimeSeries struct {
 	UnsuccessfulRequestCount *[]MetricsTimeSeriesItem `json:"unsuccessfulRequestCount,omitempty"`
 }
 
+// Incident A single incident raised from a fired alert.
+type Incident struct {
+	// AcknowledgedAt The timestamp when the incident was acknowledged
+	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
+
+	// AlertId The ID of the alert that triggered the incident
+	AlertId *string `json:"alertId,omitempty"`
+
+	// Description The description of the incident
+	Description *string `json:"description,omitempty"`
+
+	// IncidentId The ID of the incident
+	IncidentId *string `json:"incidentId,omitempty"`
+
+	// IncidentTriggerAiCostAnalysis Whether AI cost analysis was triggered for the incident
+	IncidentTriggerAiCostAnalysis *bool `json:"incidentTriggerAiCostAnalysis,omitempty"`
+
+	// IncidentTriggerAiRca Whether AI RCA was triggered for the incident
+	IncidentTriggerAiRca *bool           `json:"incidentTriggerAiRca,omitempty"`
+	Labels               *ResourceLabels `json:"labels,omitempty"`
+
+	// Notes Notes associated with the incident
+	Notes *string `json:"notes,omitempty"`
+
+	// ResolvedAt The timestamp when the incident was resolved
+	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+
+	// Status The status of the incident
+	Status *IncidentStatus `json:"status,omitempty"`
+
+	// Timestamp The timestamp of the incident
+	Timestamp *time.Time `json:"timestamp,omitempty"`
+
+	// TriggeredAt The timestamp when the incident was triggered
+	TriggeredAt *time.Time `json:"triggeredAt,omitempty"`
+}
+
 // IncidentPutRequest defines model for IncidentPutRequest.
 type IncidentPutRequest struct {
 	// Description The description of the incident
@@ -728,11 +1112,8 @@ type IncidentPutRequest struct {
 	Notes *string `json:"notes,omitempty"`
 
 	// Status The status of the incident
-	Status IncidentPutRequestStatus `json:"status"`
+	Status IncidentStatus `json:"status"`
 }
-
-// IncidentPutRequestStatus The status of the incident
-type IncidentPutRequestStatus string
 
 // IncidentPutResponse defines model for IncidentPutResponse.
 type IncidentPutResponse struct {
@@ -752,29 +1133,8 @@ type IncidentPutResponse struct {
 	IncidentTriggerAiCostAnalysis *bool `json:"incidentTriggerAiCostAnalysis,omitempty"`
 
 	// IncidentTriggerAiRca Whether AI RCA was triggered for the incident
-	IncidentTriggerAiRca *bool `json:"incidentTriggerAiRca,omitempty"`
-	Labels               *struct {
-		// ComponentName The name of the component
-		ComponentName *string `json:"componentName,omitempty"`
-
-		// ComponentUid The UID of the component
-		ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
-
-		// EnvironmentName The name of the environment
-		EnvironmentName *string `json:"environmentName,omitempty"`
-
-		// EnvironmentUid The UID of the environment
-		EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
-
-		// NamespaceName The name of the namespace
-		NamespaceName *string `json:"namespaceName,omitempty"`
-
-		// ProjectName The name of the project
-		ProjectName *string `json:"projectName,omitempty"`
-
-		// ProjectUid The UID of the project
-		ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
-	} `json:"labels,omitempty"`
+	IncidentTriggerAiRca *bool           `json:"incidentTriggerAiRca,omitempty"`
+	Labels               *ResourceLabels `json:"labels,omitempty"`
 
 	// Notes Notes associated with the incident
 	Notes *string `json:"notes,omitempty"`
@@ -783,14 +1143,14 @@ type IncidentPutResponse struct {
 	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
 
 	// Status The status of the incident
-	Status *IncidentPutResponseStatus `json:"status,omitempty"`
+	Status *IncidentStatus `json:"status,omitempty"`
 
 	// TriggeredAt The timestamp when the incident was triggered
 	TriggeredAt *time.Time `json:"triggeredAt,omitempty"`
 }
 
-// IncidentPutResponseStatus The status of the incident
-type IncidentPutResponseStatus string
+// IncidentStatus The status of the incident
+type IncidentStatus string
 
 // IncidentsQueryRequest defines model for IncidentsQueryRequest.
 type IncidentsQueryRequest struct {
@@ -814,62 +1174,7 @@ type IncidentsQueryRequestSortOrder string
 // IncidentsQueryResponse defines model for IncidentsQueryResponse.
 type IncidentsQueryResponse struct {
 	// Incidents The list of incidents
-	Incidents *[]struct {
-		// AcknowledgedAt The timestamp when the incident was acknowledged
-		AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
-
-		// AlertId The ID of the alert that triggered the incident
-		AlertId *string `json:"alertId,omitempty"`
-
-		// Description The description of the incident
-		Description *string `json:"description,omitempty"`
-
-		// IncidentId The ID of the incident
-		IncidentId *string `json:"incidentId,omitempty"`
-
-		// IncidentTriggerAiCostAnalysis Whether AI cost analysis was triggered for the incident
-		IncidentTriggerAiCostAnalysis *bool `json:"incidentTriggerAiCostAnalysis,omitempty"`
-
-		// IncidentTriggerAiRca Whether AI RCA was triggered for the incident
-		IncidentTriggerAiRca *bool `json:"incidentTriggerAiRca,omitempty"`
-		Labels               *struct {
-			// ComponentName The name of the component
-			ComponentName *string `json:"componentName,omitempty"`
-
-			// ComponentUid The UID of the component
-			ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
-
-			// EnvironmentName The name of the environment
-			EnvironmentName *string `json:"environmentName,omitempty"`
-
-			// EnvironmentUid The UID of the environment
-			EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
-
-			// NamespaceName The name of the namespace
-			NamespaceName *string `json:"namespaceName,omitempty"`
-
-			// ProjectName The name of the project
-			ProjectName *string `json:"projectName,omitempty"`
-
-			// ProjectUid The UID of the project
-			ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
-		} `json:"labels,omitempty"`
-
-		// Notes Notes associated with the incident
-		Notes *string `json:"notes,omitempty"`
-
-		// ResolvedAt The timestamp when the incident was resolved
-		ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
-
-		// Status The status of the incident
-		Status *IncidentsQueryResponseIncidentsStatus `json:"status,omitempty"`
-
-		// Timestamp The timestamp of the incident
-		Timestamp *time.Time `json:"timestamp,omitempty"`
-
-		// TriggeredAt The timestamp when the incident was triggered
-		TriggeredAt *time.Time `json:"triggeredAt,omitempty"`
-	} `json:"incidents,omitempty"`
+	Incidents *[]Incident `json:"incidents,omitempty"`
 
 	// TookMs The time taken to query the incidents in milliseconds
 	TookMs *int `json:"tookMs,omitempty"`
@@ -878,8 +1183,53 @@ type IncidentsQueryResponse struct {
 	Total *int `json:"total,omitempty"`
 }
 
-// IncidentsQueryResponseIncidentsStatus The status of the incident
-type IncidentsQueryResponseIncidentsStatus string
+// LogEntry A single log entry. timestamp and log are always present. level and metadata are present when the queried scope provides them — component queries populate both; workflow queries currently populate neither.
+type LogEntry struct {
+	// Level The log level
+	Level *string `json:"level,omitempty"`
+
+	// Log The log message
+	Log string `json:"log"`
+
+	// Metadata The metadata of the log entry
+	Metadata *LogEntryMetadata `json:"metadata,omitempty"`
+
+	// Timestamp The timestamp of the log entry
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// LogEntryMetadata The metadata of the log entry
+type LogEntryMetadata struct {
+	// ComponentName The OpenChoreo component name that generated the log
+	ComponentName *string `json:"componentName,omitempty"`
+
+	// ComponentUid The OpenChoreo component UID that generated the log
+	ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
+
+	// ContainerName The container name that generated the log
+	ContainerName *string `json:"containerName,omitempty"`
+
+	// EnvironmentName The OpenChoreo environment name that generated the log
+	EnvironmentName *string `json:"environmentName,omitempty"`
+
+	// EnvironmentUid The OpenChoreo environment UID that generated the log
+	EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
+
+	// NamespaceName The OpenChoreo namespace name that generated the log
+	NamespaceName *string `json:"namespaceName,omitempty"`
+
+	// PodName The Kubernetes pod name that generated the log
+	PodName *string `json:"podName,omitempty"`
+
+	// PodNamespace The namespace of the Kubernetes pod that generated the log
+	PodNamespace *string `json:"podNamespace,omitempty"`
+
+	// ProjectName The OpenChoreo project name that generated the log
+	ProjectName *string `json:"projectName,omitempty"`
+
+	// ProjectUid The OpenChoreo project UID that generated the log
+	ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
+}
 
 // LogsQueryRequest defines model for LogsQueryRequest.
 type LogsQueryRequest struct {
@@ -913,24 +1263,13 @@ type LogsQueryRequestSortOrder string
 // LogsQueryResponse defines model for LogsQueryResponse.
 type LogsQueryResponse struct {
 	// Logs The logs queried successfully
-	Logs *LogsQueryResponse_Logs `json:"logs,omitempty"`
+	Logs *[]LogEntry `json:"logs,omitempty"`
 
 	// TookMs The time taken to query the logs in milliseconds
 	TookMs *int `json:"tookMs,omitempty"`
 
 	// Total The total number of matching log entries, capped at 1000
 	Total *int `json:"total,omitempty"`
-}
-
-// LogsQueryResponseLogs0 defines model for .
-type LogsQueryResponseLogs0 = []ComponentLogEntry
-
-// LogsQueryResponseLogs1 defines model for .
-type LogsQueryResponseLogs1 = []WorkflowLogEntry
-
-// LogsQueryResponse_Logs The logs queried successfully
-type LogsQueryResponse_Logs struct {
-	union json.RawMessage
 }
 
 // MetricsQueryRequest defines model for MetricsQueryRequest.
@@ -966,11 +1305,140 @@ type MetricsTimeSeriesItem struct {
 	Value *float64 `json:"value,omitempty"`
 }
 
+// OAuthProtectedResourceMetadata OAuth 2.0 protected resource metadata as defined in RFC 9728.
+// `openchoreo_security_enabled` is an OpenChoreo extension, permitted by
+// RFC 9728 §2.
+type OAuthProtectedResourceMetadata struct {
+	// AuthorizationServers List of authorization server URLs
+	AuthorizationServers []string `json:"authorization_servers"`
+
+	// BearerMethodsSupported Supported bearer token methods
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+
+	// OpenchoreoSecurityEnabled Whether authentication is enforced on this server
+	OpenchoreoSecurityEnabled *bool `json:"openchoreo_security_enabled,omitempty"`
+
+	// Resource URL of the protected resource
+	Resource string `json:"resource"`
+
+	// ResourceName Human-readable name of the protected resource
+	ResourceName string `json:"resource_name"`
+
+	// ScopesSupported Supported OAuth scopes
+	ScopesSupported []string `json:"scopes_supported"`
+}
+
+// PlatformLog A single log record: the message plus the physical coordinates, pod metadata and
+// pod labels of whatever produced it.
+type PlatformLog struct {
+	// ClusterInstance Cluster the record was collected from, stamped by the logs collector.
+	ClusterInstance *string `json:"clusterInstance,omitempty"`
+
+	// ContainerImage Image the container was running.
+	ContainerImage *string `json:"containerImage,omitempty"`
+	ContainerName  *string `json:"containerName,omitempty"`
+
+	// Labels Pod labels carried on the record. Returned as well as filtered on: `labels`
+	// narrows the query, and this shows what else is on the pod.
+	Labels *map[string]string `json:"labels,omitempty"`
+
+	// Level Log severity, derived from the message text by the adapter. Absent when the
+	// adapter cannot determine one.
+	Level *string `json:"level,omitempty"`
+
+	// Log The log message. Named `log` rather than `message` to match ComponentLogEntry
+	// and WorkflowLogEntry.
+	Log string `json:"log"`
+
+	// NamespaceName Kubernetes namespace of the pod that produced the log.
+	NamespaceName *string `json:"namespaceName,omitempty"`
+
+	// NodeName Node the pod was scheduled on.
+	NodeName *string `json:"nodeName,omitempty"`
+
+	// PodIp IP address of the pod that produced the log.
+	PodIp   *string `json:"podIp,omitempty"`
+	PodName *string `json:"podName,omitempty"`
+
+	// Timestamp Timestamp of the log entry in UTC.
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// PlatformLogFilterValue One value a filter takes, with how many records carry it.
+type PlatformLogFilterValue struct {
+	// Count Matching records carrying this value, within the queried window. May be
+	// approximate on a high-cardinality filter where the backend answers from a
+	// partial term count, so treat it as an ordering hint and a sense of scale
+	// rather than a total.
+	Count int64 `json:"count"`
+
+	// Value The value, exactly as it would be sent back as a filter.
+	Value string `json:"value"`
+}
+
+// PlatformLogFilterValuesResponse defines model for PlatformLogFilterValuesResponse.
+type PlatformLogFilterValuesResponse struct {
+	// Filter The filter these values belong to, echoed from the request so a client
+	// handling several pickers can match a response to the one that asked.
+	Filter string `json:"filter"`
+
+	// TookMs The time taken to compute the values in milliseconds.
+	TookMs int64 `json:"tookMs"`
+
+	// TotalValues How many distinct values match, of which at most `maxValues` were returned.
+	// This is what lets a picker say "412 more values, keep typing to narrow"
+	// rather than silently ending its list. Counting distinct values exactly is
+	// itself an expensive aggregation on a high-cardinality field, so treat it as
+	// a sense of scale rather than a guaranteed total.
+	TotalValues int64 `json:"totalValues"`
+
+	// Values The distinct values, ordered by `count` descending then `value` ascending.
+	// Records on which the field is absent are not represented: no empty-string
+	// entry, because no filter value would select one.
+	Values []PlatformLogFilterValue `json:"values"`
+}
+
+// PlatformLogsResponse defines model for PlatformLogsResponse.
+type PlatformLogsResponse struct {
+	// Logs Log entries matching the query.
+	Logs []PlatformLog `json:"logs"`
+
+	// TookMs The time taken to query the logs in milliseconds.
+	TookMs int64 `json:"tookMs"`
+
+	// Total The total number of matching log entries, capped at 1000.
+	Total int64 `json:"total"`
+}
+
 // RecommendationResponse defines model for RecommendationResponse.
 type RecommendationResponse struct {
 	// Items One recommendation per component in scope. A single element when
 	// `component` is specified; one per component in the project otherwise.
 	Items []ComponentRecommendation `json:"items"`
+}
+
+// ResourceLabels defines model for ResourceLabels.
+type ResourceLabels struct {
+	// ComponentName The name of the component
+	ComponentName *string `json:"componentName,omitempty"`
+
+	// ComponentUid The UID of the component
+	ComponentUid *openapi_types.UUID `json:"componentUid,omitempty"`
+
+	// EnvironmentName The name of the environment
+	EnvironmentName *string `json:"environmentName,omitempty"`
+
+	// EnvironmentUid The UID of the environment
+	EnvironmentUid *openapi_types.UUID `json:"environmentUid,omitempty"`
+
+	// NamespaceName The name of the namespace
+	NamespaceName *string `json:"namespaceName,omitempty"`
+
+	// ProjectName The name of the project
+	ProjectName *string `json:"projectName,omitempty"`
+
+	// ProjectUid The UID of the project
+	ProjectUid *openapi_types.UUID `json:"projectUid,omitempty"`
 }
 
 // ResourceMetricsTimeSeries defines model for ResourceMetricsTimeSeries.
@@ -1164,25 +1632,8 @@ type RuntimeTopologySummary struct {
 	StartTime   time.Time `json:"startTime"`
 }
 
-// SpanStatus Execution status of the span, following the OpenTelemetry span Status model.
-type SpanStatus struct {
-	// Code The status code of the span. One of "ok", "error", or "unset".
-	Code *SpanStatusCode `json:"code,omitempty"`
-
-	// Message Developer-facing human-readable status description. Typically set only when code is "error".
-	Message *string `json:"message,omitempty"`
-}
-
-// SpanStatusCode The status code of the span. One of "ok", "error", or "unset".
-type SpanStatusCode string
-
-// TraceSpanDetailsRequest defines model for TraceSpanDetailsRequest.
-type TraceSpanDetailsRequest struct {
-	SearchScope ComponentSearchScope `json:"searchScope"`
-}
-
-// TraceSpanDetailsResponse defines model for TraceSpanDetailsResponse.
-type TraceSpanDetailsResponse struct {
+// SpanInfo A single span within a trace.
+type SpanInfo struct {
 	// Attributes The span attributes
 	Attributes *map[string]interface{} `json:"attributes,omitempty"`
 
@@ -1214,40 +1665,52 @@ type TraceSpanDetailsResponse struct {
 	Status *SpanStatus `json:"status,omitempty"`
 }
 
+// SpanStatus Execution status of the span, following the OpenTelemetry span Status model.
+type SpanStatus struct {
+	// Code The status code of the span. One of "ok", "error", or "unset".
+	Code *SpanStatusCode `json:"code,omitempty"`
+
+	// Message Developer-facing human-readable status description. Typically set only when code is "error".
+	Message *string `json:"message,omitempty"`
+}
+
+// SpanStatusCode The status code of the span. One of "ok", "error", or "unset".
+type SpanStatusCode string
+
+// TraceInfo Summary of a single trace.
+type TraceInfo struct {
+	// DurationNs The duration of the trace in nanoseconds
+	DurationNs *int64 `json:"durationNs,omitempty"`
+
+	// EndTime The end time of the trace
+	EndTime *time.Time `json:"endTime,omitempty"`
+
+	// HasErrors Whether any span in the trace has an error status.
+	HasErrors    *bool   `json:"hasErrors,omitempty"`
+	RootSpanId   *string `json:"rootSpanId,omitempty"`
+	RootSpanKind *string `json:"rootSpanKind,omitempty"`
+	RootSpanName *string `json:"rootSpanName,omitempty"`
+
+	// SpanCount The number of spans in the trace
+	SpanCount *int `json:"spanCount,omitempty"`
+
+	// StartTime The start time of the trace
+	StartTime *time.Time `json:"startTime,omitempty"`
+
+	// TraceId The trace ID
+	TraceId *string `json:"traceId,omitempty"`
+
+	// TraceName The name of the trace
+	TraceName *string `json:"traceName,omitempty"`
+}
+
+// TraceSpanDetailsResponse A single span within a trace.
+type TraceSpanDetailsResponse = SpanInfo
+
 // TraceSpansQueryResponse defines model for TraceSpansQueryResponse.
 type TraceSpansQueryResponse struct {
 	// Spans The list of spans
-	Spans *[]struct {
-		// Attributes The span attributes
-		Attributes *map[string]interface{} `json:"attributes,omitempty"`
-
-		// DurationNs The duration of the span in nanoseconds
-		DurationNs *int64 `json:"durationNs,omitempty"`
-
-		// EndTime The end time of the span
-		EndTime *time.Time `json:"endTime,omitempty"`
-
-		// ParentSpanId The parent span ID
-		ParentSpanId *string `json:"parentSpanId,omitempty"`
-
-		// ResourceAttributes The resource attributes
-		ResourceAttributes *map[string]interface{} `json:"resourceAttributes,omitempty"`
-
-		// SpanId The span ID
-		SpanId *string `json:"spanId,omitempty"`
-
-		// SpanKind The name of the span
-		SpanKind *string `json:"spanKind,omitempty"`
-
-		// SpanName The name of the span
-		SpanName *string `json:"spanName,omitempty"`
-
-		// StartTime The start time of the span
-		StartTime *time.Time `json:"startTime,omitempty"`
-
-		// Status Execution status of the span, following the OpenTelemetry span Status model.
-		Status *SpanStatus `json:"status,omitempty"`
-	} `json:"spans,omitempty"`
+	Spans *[]SpanInfo `json:"spans,omitempty"`
 
 	// TookMs The time taken to query the spans in milliseconds
 	TookMs *int `json:"tookMs,omitempty"`
@@ -1287,40 +1750,7 @@ type TracesQueryResponse struct {
 	Total *int `json:"total,omitempty"`
 
 	// Traces The list of traces
-	Traces *[]struct {
-		// DurationNs The duration of the trace in nanoseconds
-		DurationNs *int64 `json:"durationNs,omitempty"`
-
-		// EndTime The end time of the trace
-		EndTime *time.Time `json:"endTime,omitempty"`
-
-		// HasErrors Whether any span in the trace has an error status.
-		HasErrors    *bool   `json:"hasErrors,omitempty"`
-		RootSpanId   *string `json:"rootSpanId,omitempty"`
-		RootSpanKind *string `json:"rootSpanKind,omitempty"`
-		RootSpanName *string `json:"rootSpanName,omitempty"`
-
-		// SpanCount The number of spans in the trace
-		SpanCount *int `json:"spanCount,omitempty"`
-
-		// StartTime The start time of the trace
-		StartTime *time.Time `json:"startTime,omitempty"`
-
-		// TraceId The trace ID
-		TraceId *string `json:"traceId,omitempty"`
-
-		// TraceName The name of the trace
-		TraceName *string `json:"traceName,omitempty"`
-	} `json:"traces,omitempty"`
-}
-
-// WorkflowLogEntry defines model for WorkflowLogEntry.
-type WorkflowLogEntry struct {
-	// Log The log message
-	Log *string `json:"log,omitempty"`
-
-	// Timestamp The timestamp of the log entry
-	Timestamp *time.Time `json:"timestamp,omitempty"`
+	Traces *[]TraceInfo `json:"traces,omitempty"`
 }
 
 // WorkflowSearchScope defines model for WorkflowSearchScope.
@@ -1350,6 +1780,48 @@ type FinOpsProject = string
 
 // FinOpsStartTime defines model for FinOpsStartTime.
 type FinOpsStartTime = time.Time
+
+// PlatformLogFilterValuesFilter defines model for PlatformLogFilterValuesFilter.
+type PlatformLogFilterValuesFilter string
+
+// PlatformLogFilterValuesMaxValues defines model for PlatformLogFilterValuesMaxValues.
+type PlatformLogFilterValuesMaxValues = int
+
+// PlatformLogFilterValuesValueSearch defines model for PlatformLogFilterValuesValueSearch.
+type PlatformLogFilterValuesValueSearch = string
+
+// PlatformLogsClusterInstance defines model for PlatformLogsClusterInstance.
+type PlatformLogsClusterInstance = []string
+
+// PlatformLogsContainerName defines model for PlatformLogsContainerName.
+type PlatformLogsContainerName = []string
+
+// PlatformLogsEndTime defines model for PlatformLogsEndTime.
+type PlatformLogsEndTime = time.Time
+
+// PlatformLogsLabels defines model for PlatformLogsLabels.
+type PlatformLogsLabels = string
+
+// PlatformLogsLimit defines model for PlatformLogsLimit.
+type PlatformLogsLimit = int
+
+// PlatformLogsLogLevels defines model for PlatformLogsLogLevels.
+type PlatformLogsLogLevels = []string
+
+// PlatformLogsNamespace defines model for PlatformLogsNamespace.
+type PlatformLogsNamespace = []string
+
+// PlatformLogsPodName defines model for PlatformLogsPodName.
+type PlatformLogsPodName = []string
+
+// PlatformLogsSearchPhrase defines model for PlatformLogsSearchPhrase.
+type PlatformLogsSearchPhrase = string
+
+// PlatformLogsSortOrder defines model for PlatformLogsSortOrder.
+type PlatformLogsSortOrder string
+
+// PlatformLogsStartTime defines model for PlatformLogsStartTime.
+type PlatformLogsStartTime = time.Time
 
 // GetComponentCostsParams defines parameters for GetComponentCosts.
 type GetComponentCostsParams struct {
@@ -1386,6 +1858,120 @@ type GetRecommendationsParams struct {
 	EndTime FinOpsEndTime `form:"endTime" json:"endTime"`
 }
 
+// GetPlatformLogsParams defines parameters for GetPlatformLogs.
+type GetPlatformLogsParams struct {
+	// ClusterInstance Clusters the records were collected from, as configured on each logs collector.
+	// Comma-separated; OR within.
+	ClusterInstance *PlatformLogsClusterInstance `form:"clusterInstance,omitempty" json:"clusterInstance,omitempty"`
+
+	// Namespace Kubernetes namespaces of the pods. Comma-separated; OR within.
+	Namespace *PlatformLogsNamespace `form:"namespace,omitempty" json:"namespace,omitempty"`
+
+	// PodName Pod names. Comma-separated; OR within.
+	PodName *PlatformLogsPodName `form:"podName,omitempty" json:"podName,omitempty"`
+
+	// ContainerName Container names. Comma-separated; OR within.
+	ContainerName *PlatformLogsContainerName `form:"containerName,omitempty" json:"containerName,omitempty"`
+
+	// Labels Kubernetes label selector over the pod labels on each record. Comma means AND
+	// here, matching `kubectl -l`. Equality-based selectors only (`key=value`); set-based
+	// operators are not supported. This is how plane attribution is expressed, for
+	// example `openchoreo.dev/plane=controlplane,app.kubernetes.io/name=openbao`.
+	Labels *PlatformLogsLabels `form:"labels,omitempty" json:"labels,omitempty"`
+
+	// LogLevels Log severities to include. Comma-separated; OR within. Named to match
+	// `LogsQueryRequest.logLevels` on the component and workflow endpoints.
+	LogLevels *PlatformLogsLogLevels `form:"logLevels,omitempty" json:"logLevels,omitempty"`
+
+	// SearchPhrase Text to search for within log messages. Entries not containing the phrase are
+	// excluded.
+	SearchPhrase *PlatformLogsSearchPhrase `form:"searchPhrase,omitempty" json:"searchPhrase,omitempty"`
+
+	// StartTime Inclusive lower bound of the log window (RFC 3339, absolute UTC).
+	StartTime PlatformLogsStartTime `form:"startTime" json:"startTime"`
+
+	// EndTime Exclusive upper bound of the log window (RFC 3339, absolute UTC). Must be strictly
+	// greater than startTime.
+	EndTime PlatformLogsEndTime `form:"endTime" json:"endTime"`
+
+	// Limit Maximum number of log entries to return.
+	Limit *PlatformLogsLimit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// SortOrder Sort direction on the log timestamp.
+	SortOrder *GetPlatformLogsParamsSortOrder `form:"sortOrder,omitempty" json:"sortOrder,omitempty"`
+}
+
+// GetPlatformLogsParamsLogLevels defines parameters for GetPlatformLogs.
+type GetPlatformLogsParamsLogLevels string
+
+// GetPlatformLogsParamsSortOrder defines parameters for GetPlatformLogs.
+type GetPlatformLogsParamsSortOrder string
+
+// GetPlatformLogFilterValuesParams defines parameters for GetPlatformLogFilterValues.
+type GetPlatformLogFilterValuesParams struct {
+	// Filter The filter to list values for, named as the query parameter that accepts it -
+	// `podName` lists the values that filter takes.
+	//
+	// Only the coordinate filters are listed. `logLevels` is a fixed enum a client
+	// already knows, and `labels` is a selector rather than a field with values.
+	Filter GetPlatformLogFilterValuesParamsFilter `form:"filter" json:"filter"`
+
+	// StartTime Inclusive lower bound of the log window (RFC 3339, absolute UTC).
+	StartTime PlatformLogsStartTime `form:"startTime" json:"startTime"`
+
+	// EndTime Exclusive upper bound of the log window (RFC 3339, absolute UTC). Must be strictly
+	// greater than startTime.
+	EndTime PlatformLogsEndTime `form:"endTime" json:"endTime"`
+
+	// ClusterInstance Clusters the records were collected from, as configured on each logs collector.
+	// Comma-separated; OR within.
+	ClusterInstance *PlatformLogsClusterInstance `form:"clusterInstance,omitempty" json:"clusterInstance,omitempty"`
+
+	// Namespace Kubernetes namespaces of the pods. Comma-separated; OR within.
+	Namespace *PlatformLogsNamespace `form:"namespace,omitempty" json:"namespace,omitempty"`
+
+	// PodName Pod names. Comma-separated; OR within.
+	PodName *PlatformLogsPodName `form:"podName,omitempty" json:"podName,omitempty"`
+
+	// ContainerName Container names. Comma-separated; OR within.
+	ContainerName *PlatformLogsContainerName `form:"containerName,omitempty" json:"containerName,omitempty"`
+
+	// Labels Kubernetes label selector over the pod labels on each record. Comma means AND
+	// here, matching `kubectl -l`. Equality-based selectors only (`key=value`); set-based
+	// operators are not supported. This is how plane attribution is expressed, for
+	// example `openchoreo.dev/plane=controlplane,app.kubernetes.io/name=openbao`.
+	Labels *PlatformLogsLabels `form:"labels,omitempty" json:"labels,omitempty"`
+
+	// LogLevels Log severities to include. Comma-separated; OR within. Named to match
+	// `LogsQueryRequest.logLevels` on the component and workflow endpoints.
+	LogLevels *PlatformLogsLogLevels `form:"logLevels,omitempty" json:"logLevels,omitempty"`
+
+	// SearchPhrase Text to search for within log messages. Entries not containing the phrase are
+	// excluded.
+	SearchPhrase *PlatformLogsSearchPhrase `form:"searchPhrase,omitempty" json:"searchPhrase,omitempty"`
+
+	// ValueSearch Return only values containing this text, case-insensitively. This is how a
+	// picker narrows as its user types, and it is what makes a high-cardinality
+	// filter usable at all: `podName` on a busy plane has more distinct values than
+	// any list should offer, and typing three characters cuts it to something
+	// choosable.
+	//
+	// Distinct from `searchPhrase`, which narrows the *records* considered. This
+	// narrows the *values* returned from those records.
+	ValueSearch *PlatformLogFilterValuesValueSearch `form:"valueSearch,omitempty" json:"valueSearch,omitempty"`
+
+	// MaxValues The maximum number of values to return, ordered by `count` descending then
+	// `value` ascending - so a truncated list holds the busiest. Named to stay
+	// distinct from `limit`, which is a record page size and has no meaning here.
+	MaxValues *PlatformLogFilterValuesMaxValues `form:"maxValues,omitempty" json:"maxValues,omitempty"`
+}
+
+// GetPlatformLogFilterValuesParamsFilter defines parameters for GetPlatformLogFilterValues.
+type GetPlatformLogFilterValuesParamsFilter string
+
+// GetPlatformLogFilterValuesParamsLogLevels defines parameters for GetPlatformLogFilterValues.
+type GetPlatformLogFilterValuesParamsLogLevels string
+
 // QueryEventsJSONRequestBody defines body for QueryEvents for application/json ContentType.
 type QueryEventsJSONRequestBody = EventsQueryRequest
 
@@ -1398,14 +1984,11 @@ type QueryMetricsJSONRequestBody = MetricsQueryRequest
 // QueryAlertsJSONRequestBody defines body for QueryAlerts for application/json ContentType.
 type QueryAlertsJSONRequestBody = AlertsQueryRequest
 
-// CreateAlertRuleJSONRequestBody defines body for CreateAlertRule for application/json ContentType.
-type CreateAlertRuleJSONRequestBody = AlertRuleRequest
+// QueryAuditLogFilterValuesJSONRequestBody defines body for QueryAuditLogFilterValues for application/json ContentType.
+type QueryAuditLogFilterValuesJSONRequestBody = AuditLogFilterValuesRequest
 
-// UpdateAlertRuleJSONRequestBody defines body for UpdateAlertRule for application/json ContentType.
-type UpdateAlertRuleJSONRequestBody = AlertRuleRequest
-
-// HandleAlertWebhookJSONRequestBody defines body for HandleAlertWebhook for application/json ContentType.
-type HandleAlertWebhookJSONRequestBody = AlertWebhookRequest
+// QueryAuditLogsJSONRequestBody defines body for QueryAuditLogs for application/json ContentType.
+type QueryAuditLogsJSONRequestBody = AuditLogsQueryRequest
 
 // QueryIncidentsJSONRequestBody defines body for QueryIncidents for application/json ContentType.
 type QueryIncidentsJSONRequestBody = IncidentsQueryRequest
@@ -1421,9 +2004,6 @@ type QueryTracesJSONRequestBody = TracesQueryRequest
 
 // QuerySpansForTraceJSONRequestBody defines body for QuerySpansForTrace for application/json ContentType.
 type QuerySpansForTraceJSONRequestBody = TracesQueryRequest
-
-// QuerySpanDetailsForTraceJSONRequestBody defines body for QuerySpanDetailsForTrace for application/json ContentType.
-type QuerySpanDetailsForTraceJSONRequestBody = TraceSpanDetailsRequest
 
 // AsComponentSearchScope returns the union data inside the EventsQueryRequest_SearchScope as a ComponentSearchScope
 func (t EventsQueryRequest_SearchScope) AsComponentSearchScope() (ComponentSearchScope, error) {
@@ -1545,68 +2125,6 @@ func (t LogsQueryRequest_SearchScope) MarshalJSON() ([]byte, error) {
 }
 
 func (t *LogsQueryRequest_SearchScope) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsLogsQueryResponseLogs0 returns the union data inside the LogsQueryResponse_Logs as a LogsQueryResponseLogs0
-func (t LogsQueryResponse_Logs) AsLogsQueryResponseLogs0() (LogsQueryResponseLogs0, error) {
-	var body LogsQueryResponseLogs0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLogsQueryResponseLogs0 overwrites any union data inside the LogsQueryResponse_Logs as the provided LogsQueryResponseLogs0
-func (t *LogsQueryResponse_Logs) FromLogsQueryResponseLogs0(v LogsQueryResponseLogs0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLogsQueryResponseLogs0 performs a merge with any union data inside the LogsQueryResponse_Logs, using the provided LogsQueryResponseLogs0
-func (t *LogsQueryResponse_Logs) MergeLogsQueryResponseLogs0(v LogsQueryResponseLogs0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLogsQueryResponseLogs1 returns the union data inside the LogsQueryResponse_Logs as a LogsQueryResponseLogs1
-func (t LogsQueryResponse_Logs) AsLogsQueryResponseLogs1() (LogsQueryResponseLogs1, error) {
-	var body LogsQueryResponseLogs1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLogsQueryResponseLogs1 overwrites any union data inside the LogsQueryResponse_Logs as the provided LogsQueryResponseLogs1
-func (t *LogsQueryResponse_Logs) FromLogsQueryResponseLogs1(v LogsQueryResponseLogs1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLogsQueryResponseLogs1 performs a merge with any union data inside the LogsQueryResponse_Logs, using the provided LogsQueryResponseLogs1
-func (t *LogsQueryResponse_Logs) MergeLogsQueryResponseLogs1(v LogsQueryResponseLogs1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t LogsQueryResponse_Logs) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *LogsQueryResponse_Logs) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

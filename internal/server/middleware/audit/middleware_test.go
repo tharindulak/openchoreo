@@ -110,6 +110,45 @@ func TestExtractActor(t *testing.T) {
 	}
 }
 
+// TestExtractActor_CarriesIssuerAndSession guards that the identity's
+// namespace travels with it: without iss, the same sub from two IdPs is
+// indistinguishable.
+func TestExtractActor_CarriesIssuerAndSession(t *testing.T) {
+	const issuer, sessionID = "https://idp.example.com/oauth2/token", "b3f1c2d4"
+	ctx := auth.SetSubjectContext(context.Background(), &auth.SubjectContext{
+		ID:        "user-123",
+		Issuer:    issuer,
+		SessionID: sessionID,
+		Type:      "user",
+	})
+
+	actor := ExtractActor(ctx)
+
+	if actor.Issuer != issuer {
+		t.Errorf("Issuer = %q, want %q", actor.Issuer, issuer)
+	}
+	if actor.SessionID != sessionID {
+		t.Errorf("SessionID = %q, want %q", actor.SessionID, sessionID)
+	}
+}
+
+// TestExtractActor_OmitsAbsentIssuerAndSession covers an anonymous actor and
+// an authenticated one whose IdP issues no sid, which OIDC leaves optional.
+func TestExtractActor_OmitsAbsentIssuerAndSession(t *testing.T) {
+	if actor := ExtractActor(context.Background()); actor.Issuer != "" || actor.SessionID != "" {
+		t.Errorf("anonymous actor = %+v, want no issuer or session", actor)
+	}
+
+	ctx := auth.SetSubjectContext(context.Background(), &auth.SubjectContext{
+		ID:     "user-123",
+		Issuer: "https://idp.example.com/oauth2/token",
+		Type:   "user",
+	})
+	if actor := ExtractActor(ctx); actor.SessionID != "" {
+		t.Errorf("SessionID = %q, want empty when the IdP issued no sid", actor.SessionID)
+	}
+}
+
 // TestMiddleware_Handler_EmitsOnPanic guards against a panicking handler
 // producing zero audit events. The panic must still propagate afterward —
 // this only closes the audit gap, it doesn't change failure behavior.
@@ -266,7 +305,7 @@ func TestMiddleware_Handler_ResultClassification(t *testing.T) {
 		want       Result
 	}{
 		{name: "2xx is success", statusCode: http.StatusOK, want: ResultSuccess},
-		{name: "401 is denied", statusCode: http.StatusUnauthorized, want: ResultDenied},
+		{name: "401 is unauthenticated", statusCode: http.StatusUnauthorized, want: ResultUnauthenticated},
 		{name: "403 is denied", statusCode: http.StatusForbidden, want: ResultDenied},
 		{name: "500 is failure", statusCode: http.StatusInternalServerError, want: ResultFailure},
 	}
@@ -343,6 +382,50 @@ func TestMiddleware_Handler_WriteWithoutExplicitWriteHeader(t *testing.T) {
 	}
 	if sink.events[0].Result != ResultSuccess {
 		t.Errorf("Result = %v, want success (implicit 200)", sink.events[0].Result)
+	}
+}
+
+// TestMiddleware_Handler_SetResultOverridesStatusCode guards the fix for a
+// hijacking handler (exec's WebSocket upgrade): once hijacked, nothing
+// written to the raw connection touches the wrapped ResponseWriter, so a
+// post-hijack failure would otherwise be misclassified as success from the
+// unchanged 200 default. A handler that calls SetResult before returning
+// must have that result win over rw.statusCode's classification.
+func TestMiddleware_Handler_SetResultOverridesStatusCode(t *testing.T) {
+	sink := &recordingSink{}
+	policies, errs := NewPolicySet(coreconfig.NewPath("audit"), Settings{Publish: true}, nil)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected validation errors: %v", errs)
+	}
+	emitter, err := NewEmitter("test-service", policies, sink)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	op := &Operation{ID: testProjectOpID, Action: "create_project", ResourceType: "project", Category: CategoryManagement}
+	patternMap := map[string]*Operation{testProjectPattern: op}
+	mw := newMiddleware(slog.Default(), patternMap, emitter, true)
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulates a hijack: the wrapped ResponseWriter never sees a
+		// non-200 status, but the handler knows the real outcome failed.
+		SetResult(r.Context(), ResultFailure)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/projects", nil)
+	req.Pattern = testProjectPattern
+	rw := httptest.NewRecorder()
+
+	mw.Handler(next).ServeHTTP(rw, req)
+
+	if len(sink.events) != 1 {
+		t.Fatalf("expected exactly one audit event, got %d", len(sink.events))
+	}
+	if sink.events[0].Result != ResultFailure {
+		t.Errorf("Result = %v, want failure (SetResult must override the unchanged 200 status code)",
+			sink.events[0].Result)
+	}
+	if rw.Code != http.StatusOK {
+		t.Errorf("recorded status = %d, want 200 (responseWriter must not alter the real response)", rw.Code)
 	}
 }
 

@@ -189,7 +189,7 @@ install/prerequisites/openbao/setup.sh --dev --seed-dev-secrets
 
 This installs OpenBao in dev mode into the `openbao` namespace, configures Kubernetes auth with reader/writer policies, seeds placeholder development secrets, and creates the `ClusterSecretStore`.
 
-To use a different secret backend (Vault, AWS Secrets Manager, etc.), skip this step and create your own `ClusterSecretStore` named `default` following the [ESO provider docs](https://external-secrets.io/latest/provider/).
+To use a different secret backend (Vault, AWS Secrets Manager, etc.), skip this step and create your own `ClusterSecretStore` named `default` following the [ESO provider docs](https://external-secrets.io/latest/api/clustersecretstore/).
 
 ### Install Data Plane
 
@@ -200,6 +200,18 @@ helm upgrade --install openchoreo-data-plane install/helm/openchoreo-data-plane 
   --create-namespace \
   --values install/k3d/single-cluster/values-dp.yaml
 ```
+
+### Local Development Tunnels (`occ remote`)
+
+Enabled by the k3d values files: the remote-connect SNI router on NodePort 30443 (`values-dp.yaml`), mapped to the host in `config.yaml`, and `remoteConnect` on the control plane (`values-cp.yaml`). Both are off in the charts by default.
+
+No key or certificate setup is needed — the control-plane chart generates the capability signing key, and each remote-agent's TLS cert is generated on first use.
+
+```bash
+kubectl get svc openchoreo-remote-agent-router -n openchoreo-data-plane
+```
+
+Expect `NodePort` and `8443:30443/TCP`. See [samples/local-development](../../../samples/local-development/README.md).
 
 ### Register Data Plane
 
@@ -436,18 +448,19 @@ kubectl patch clusterworkflowplane default -n default --type merge \
 
 All ports are mapped 1:1 (host:container) unless noted.
 
-| Port  | Plane         | Service                |
-|-------|---------------|------------------------|
-| 8080  | Control       | Gateway HTTP           |
-| 8443  | Control       | Gateway HTTPS          |
-| 19080 | Data          | Gateway HTTP           |
-| 19443 | Data          | Gateway HTTPS          |
-| 10081 | Build         | Argo Workflows UI      |
-| 10082 | Build         | Container Registry     |
-| 11080 | Observability | Observer API (HTTP)    |
-| 11085 | Observability | Gateway HTTPS          |
-| 11081 | Observability | OpenSearch Dashboards* |
-| 11082 | Observability | OpenSearch API*        |
+| Port  | Plane         | Service                   |
+|-------|---------------|---------------------------|
+| 8080  | Control       | Gateway HTTP              |
+| 8443  | Control       | Gateway HTTPS             |
+| 19080 | Data          | Gateway HTTP              |
+| 19443 | Data          | Gateway HTTPS             |
+| 30443 | Data          | remote-connect SNI router |
+| 10081 | Build         | Argo Workflows UI         |
+| 10082 | Build         | Container Registry        |
+| 11080 | Observability | Observer API (HTTP)       |
+| 11085 | Observability | Gateway HTTPS             |
+| 11081 | Observability | OpenSearch Dashboards*    |
+| 11082 | Observability | OpenSearch API*           |
 
 *OpenSearch ports are not 1:1 (11081:5601, 11082:9200) since those services don't support port overrides.
 

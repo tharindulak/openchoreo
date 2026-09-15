@@ -18,7 +18,9 @@ GO_BUILD_BINARIES := \
 	observer:$(PROJECT_DIR)/cmd/observer/main.go \
 	event-forwarder:$(PROJECT_DIR)/cmd/event-forwarder/main.go \
 	cluster-gateway:$(PROJECT_DIR)/cmd/cluster-gateway \
-	cluster-agent:$(PROJECT_DIR)/cmd/cluster-agent
+	cluster-agent:$(PROJECT_DIR)/cmd/cluster-agent \
+	remote-agent:$(PROJECT_DIR)/cmd/remote-agent \
+	remote-agent-router:$(PROJECT_DIR)/cmd/remote-agent-router
 
 GO_BUILD_BINARY_NAMES := $(foreach b,$(GO_BUILD_BINARIES),$(word 1,$(subst :, ,$(b))))
 
@@ -62,7 +64,10 @@ define package_binary
 	$(call log_info, Packaging binary '$(BINARY_NAME)' for $(OS)/$(ARCH))
 	if [ -f $(BIN_PATH) ]; then \
 		if [ $(OS) = "windows" ]; then \
-			zip -rj $(OUTPUT_PATH)/$(PACKAGE_FILE_NAME).zip $(BIN_PATH); \
+			( trap 'rm -f $(OUTPUT_PATH)/$(BINARY_NAME).exe' EXIT; \
+			  cp $(BIN_PATH) $(OUTPUT_PATH)/$(BINARY_NAME).exe; \
+			  zip -rj $(OUTPUT_PATH)/$(PACKAGE_FILE_NAME).zip $(OUTPUT_PATH)/$(BINARY_NAME).exe; \
+			); \
 		else \
 			 tar -zcvf $(OUTPUT_PATH)/$(PACKAGE_FILE_NAME).tar.gz -C $(OUTPUT_PATH) $(BINARY_NAME); \
 		fi; \
@@ -196,10 +201,25 @@ openapi-codegen: oapi-codegen ## Generate Go server and client code from OpenAPI
 	$(OAPI_CODEGEN) -config internal/observer/api/cfg-server.yaml openapi/observer-api.yaml
 	@$(call log, "Generating Observer OpenAPI client")
 	$(OAPI_CODEGEN) -config internal/observer/api/cfg-client.yaml openapi/observer-api.yaml
+	@$(call log, "Generating Observer Internal OpenAPI server interface")
+	$(OAPI_CODEGEN) -config internal/observer/api/cfg-internal-server.yaml openapi/observer-internal-api.yaml
 	@$(call log, "Generating Observer Logs Adapter API client")
 	$(OAPI_CODEGEN) -config internal/observer/api/cfg-logs-adapter-client.yaml openapi/observability-logs-adapter-api.yaml
 	@$(call log, "Generating Observer FinOps Adapter API client")
 	$(OAPI_CODEGEN) -config internal/observer/api/cfg-finops-adapter-client.yaml openapi/finops-adapter-api.yaml
+
+# AUDIT_SERVICES are the API servers tools/auditgen knows how to generate for
+# — one -service value each, matching its registry (tools/auditgen/services.go).
+# Adding a third service is an entry here plus one in that registry.
+AUDIT_SERVICES ?= openchoreo-api observer
+
+.PHONY: audit-gen
+audit-gen: openapi-codegen ## Regenerate every service's audit definitions table from its OpenAPI spec.
+	@$(call log, "Generating audit operation definitions")
+	@for svc in $(AUDIT_SERVICES); do \
+		echo "  $$svc"; \
+		go run ./tools/auditgen -service $$svc || exit 1; \
+	done
 
 .PHONY: mockery-gen
 mockery-gen: mockery ## Regenerate mockery mocks.

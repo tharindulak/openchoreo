@@ -34,7 +34,6 @@ from src.agent.middleware import (
 from src.agent.skills import Skill, create_load_skill_tool, discover_skills, load_skills
 from src.agent.stream_parser import ChatResponseParser
 from src.agent.tool_registry import (
-    ALL_TOOL_FACTORIES,
     OBSERVABILITY_TOOLS,
     OPENCHOREO_TOOLS,
     TOOL_ACTIVE_FORMS,
@@ -64,7 +63,6 @@ class Agent:
         response_format: type[BaseModel] | None,
         recursion_limit: int,
         use_summarization: bool = False,
-        tool_factories: list[Callable[..., BaseTool]] | None = None,
         skills: set[str] | Callable[[], list[Skill]] | None = None,
         tools_from_server: str | None = None,
     ):
@@ -74,7 +72,6 @@ class Agent:
         self.recursion_limit = recursion_limit
         self._middleware_classes = middleware
         self._use_summarization = use_summarization
-        self._tool_factories = tool_factories or []
         self._skills = skills or set()
         self._tools_from_server = tools_from_server
 
@@ -90,8 +87,8 @@ class Agent:
         model = get_model(model_name=settings.rca_model_name, api_key=resolve_api_key())
         tools: list[BaseTool] = []
         # Names of tools discovered from the MCP connection — as opposed to
-        # local tools (`self._tool_factories`, `create_load_skill_tool`'s
-        # output) added below. Generic: which tools came from the connection
+        # local tools (`create_load_skill_tool`'s output) added below.
+        # Generic: which tools came from the connection
         # this Agent was told to discover from, not any particular tool's
         # name. Fed to ToolCallRecorder so it only records calls that
         # actually crossed to that connection — see its own docstring.
@@ -119,9 +116,6 @@ class Agent:
                 tools = [t for t in all_tools if t.name in wanted]
                 connection_tool_names = {t.name for t in tools}
                 logger.debug("Filtered to %d MCP tools: %s", len(tools), [t.name for t in tools])
-
-        for factory in self._tool_factories:
-            tools.append(factory(auth))
 
         # A callable discovers by directory (whatever's mounted, resolved
         # fresh); a literal set names skills up front and raises if one is
@@ -202,7 +196,11 @@ RCA_AGENT = Agent(
         TOOLS.QUERY_TRACES,
         TOOLS.QUERY_TRACE_SPANS,
         TOOLS.LIST_COMPONENTS,
+        TOOLS.LIST_RELEASE_BINDINGS,
+        TOOLS.GET_RELEASE_BINDING,
         TOOLS.GET_COMPONENT_RELEASE,
+        TOOLS.LIST_RESOURCE_RELEASE_BINDINGS,
+        TOOLS.GET_RESOURCE_RELEASE_BINDING,
     },
     middleware=[
         LoggingMiddleware,
@@ -217,8 +215,18 @@ RCA_AGENT = Agent(
 
 REMED_AGENT = Agent(
     template="prompts/remed_agent_prompt.j2",
-    tools=set(),
-    tool_factories=ALL_TOOL_FACTORIES,
+    tools={
+        TOOLS.LIST_COMPONENTS,
+        TOOLS.GET_COMPONENT,
+        TOOLS.LIST_WORKLOADS,
+        TOOLS.GET_WORKLOAD,
+        TOOLS.LIST_RELEASE_BINDINGS,
+        TOOLS.GET_RELEASE_BINDING,
+        TOOLS.GET_COMPONENT_RELEASE,
+        TOOLS.GET_COMPONENT_RELEASE_SCHEMA,
+        TOOLS.LIST_RESOURCE_RELEASE_BINDINGS,
+        TOOLS.GET_RESOURCE_RELEASE_BINDING,
+    },
     middleware=[
         LoggingMiddleware,
         ToolErrorHandlerMiddleware,
@@ -365,7 +373,7 @@ async def stream_chat(
         yield emit(
             {
                 "type": "error",
-                "message": f"An error occured (request_id: {request_id_context.get()})",
+                "message": f"An error occurred (request_id: {request_id_context.get()})",
             }
         )
 
@@ -399,7 +407,7 @@ async def run_analysis(
             rca_agent, rca_logging = await RCA_AGENT.create(
                 auth=get_oauth2_auth(),
                 usage_callback=usage_callback,
-                context={"log_capture": raw_log_lines},
+                context={"scope": scope, "log_capture": raw_log_lines},
             )
 
             content = render(

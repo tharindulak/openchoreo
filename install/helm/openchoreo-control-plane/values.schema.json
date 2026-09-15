@@ -2954,7 +2954,23 @@
         },
         "infrastructure": {
           "additionalProperties": true,
-          "description": "Gateway infrastructure configuration passed to the generated Service.\nUsed to configure cloud provider load balancer settings via annotations.\nExample for AWS with Elastic IP:\n  infrastructure:\n    annotations:\n      service.beta.kubernetes.io/aws-load-balancer-type: \"external\"\n      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: \"ip\"\n      service.beta.kubernetes.io/aws-load-balancer-scheme: \"internet-facing\"\n      service.beta.kubernetes.io/aws-load-balancer-eip-allocations: \"eipalloc-xxx\"",
+          "description": "Gateway infrastructure configuration passed to the generated Service.\nUsed to configure cloud provider load balancer settings via annotations.\nExample for AWS with Elastic IP:\n  infrastructure:\n    annotations:\n      service.beta.kubernetes.io/aws-load-balancer-type: \"external\"\n      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: \"ip\"\n      service.beta.kubernetes.io/aws-load-balancer-scheme: \"internet-facing\"\n      service.beta.kubernetes.io/aws-load-balancer-eip-allocations: \"eipalloc-xxx\"\n\nThe chart always renders spec.infrastructure so platform identity labels\nreach the kgateway proxy pods. That field needs Gateway API \u003e= v1.2 - on\nolder CRDs it is pruned and the proxy pods lose plane attribution.\nlabels is capped at 8 entries by Gateway API, platform identity included.\n",
+          "properties": {
+            "annotations": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "required": [],
+              "type": "object"
+            },
+            "labels": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "required": [],
+              "type": "object"
+            }
+          },
           "required": [],
           "title": "infrastructure",
           "type": "object"
@@ -3391,6 +3407,152 @@
               },
               "required": [],
               "title": "mcp",
+              "type": "object"
+            },
+            "remoteConnect": {
+              "additionalProperties": false,
+              "description": "`occ remote` remote-connect: resolve/authorize endpoints + the per-project+env remote-agent the control plane provisions into the data plane.",
+              "properties": {
+                "agentImage": {
+                  "additionalProperties": false,
+                  "description": "Container image for the provisioned remote-agent Deployment",
+                  "properties": {
+                    "pullPolicy": {
+                      "default": "IfNotPresent",
+                      "description": "Image pull policy. Set Always when the tag is floating, so a rebuilt agent is fetched.",
+                      "enum": [
+                        "Always",
+                        "IfNotPresent",
+                        "Never"
+                      ],
+                      "required": [],
+                      "title": "pullPolicy"
+                    },
+                    "repository": {
+                      "default": "ghcr.io/openchoreo/remote-agent",
+                      "description": "Remote-agent image repository",
+                      "title": "repository",
+                      "type": "string"
+                    },
+                    "tag": {
+                      "default": "",
+                      "description": "Image tag. Empty uses Chart.AppVersion.",
+                      "title": "tag",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "agentImage"
+                },
+                "agentListenPort": {
+                  "default": 8443,
+                  "description": "TLS tunnel port the provisioned remote-agent listens on.",
+                  "maximum": 65535,
+                  "minimum": 1,
+                  "title": "agentListenPort",
+                  "type": "integer"
+                },
+                "authorizeInsecure": {
+                  "default": false,
+                  "description": "Skip TLS verification when the remote-agent calls the control plane (development only).",
+                  "title": "authorizeInsecure",
+                  "type": "boolean"
+                },
+                "authorizeUrl": {
+                  "default": "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080/api/v1/remote-connect:authorize",
+                  "description": "Control-plane authorize endpoint the remote-agent calls per stream, as reachable from the DP.",
+                  "title": "authorizeUrl",
+                  "type": "string"
+                },
+                "enabled": {
+                  "default": false,
+                  "description": "Enable the remote-connect resolve/authorize endpoints and remote-agent provisioning.\nRequires remoteAgentRouter.enabled on each data plane and a reachable\nentrypointAddress; off by default because both are deployment-specific.\n",
+                  "title": "enabled",
+                  "type": "boolean"
+                },
+                "entrypointAddress": {
+                  "default": "",
+                  "description": "host:port of the shared remote-connect SNI router that occ dials, as reachable from a\ndeveloper machine (one per data plane; see the openchoreo-data-plane chart's\nremoteAgentRouter). Required when enabled; no default, as it is site-specific.\n",
+                  "title": "entrypointAddress",
+                  "type": "string"
+                },
+                "generateSigningKey": {
+                  "default": true,
+                  "description": "Generate the Ed25519 capability signing key into signingKeySecretName, reusing\nan existing secret on upgrade. Set false to manage the secret yourself; it must\nthen already exist, or openchoreo-api will not start.\nReuse relies on a cluster lookup, which is unavailable to client-side renderers\n(helm template, Argo CD without server-side lookup) — those regenerate the key on\nevery render, invalidating live `occ remote` sessions. Manage the secret yourself\nin those setups.\n",
+                  "title": "generateSigningKey",
+                  "type": "boolean"
+                },
+                "issuer": {
+                  "default": "openchoreo-control-plane",
+                  "description": "Capability JWT issuer (iss) claim.",
+                  "title": "issuer",
+                  "type": "string"
+                },
+                "keyId": {
+                  "default": "remote-connect-1",
+                  "description": "JWT kid header for capability signing-key rotation.",
+                  "title": "keyId",
+                  "type": "string"
+                },
+                "maxSessionSeconds": {
+                  "default": 43200,
+                  "description": "Total length one `occ remote` session may reach across renewals, measured from\nits first resolve. Every renewal re-runs the full authorization check, so the\nrevocation window stays the renewal interval however long a session runs. This\nbounds a forgotten session rather than acting as an access control, and a\nrefused session can always be restarted. Must be at least ttlSeconds, or the\nfirst renewal of every session is refused. 0 means unbounded.\n",
+                  "minimum": 0,
+                  "title": "maxSessionSeconds",
+                  "type": "integer"
+                },
+                "reaperIntervalSeconds": {
+                  "default": 300,
+                  "description": "How often the idle-remote-agent reaper runs, in seconds.",
+                  "title": "reaperIntervalSeconds",
+                  "type": "integer"
+                },
+                "reaperTtlSeconds": {
+                  "default": 1800,
+                  "description": "How long a remote-agent may be idle before the reaper deletes it, in seconds.",
+                  "title": "reaperTtlSeconds",
+                  "type": "integer"
+                },
+                "secretTtlSeconds": {
+                  "default": 600,
+                  "description": "Capability lifetime when the capability authorizes reading secret- or\nconfigmap-backed dependency values. Authorization is decided once, at resolve,\nand the per-stream authorize callback re-checks nothing — so this is the entire\nrevocation window for a credential read, and is meant to be shorter than\nttlSeconds. A value above ttlSeconds is rejected at startup. 0 falls back to\nttlSeconds.\n",
+                  "minimum": 0,
+                  "title": "secretTtlSeconds",
+                  "type": "integer"
+                },
+                "secretsEnabled": {
+                  "default": true,
+                  "description": "Allow `occ remote` to resolve secret- and configmap-backed dependency values.\nThe remote-agent reads them in the data plane and returns them over the tunnel, so\nthey never pass through openchoreo-api. Reading a secret additionally requires\nthe resource:read-secrets action, so this is an operator kill switch independent\nof role configuration: with it off, no capability authorizes a read whatever the\nroles grant.\n",
+                  "title": "secretsEnabled",
+                  "type": "boolean"
+                },
+                "signingKeyPath": {
+                  "default": "/etc/remote-connect/signing.pem",
+                  "description": "PEM Ed25519 signing key mount path (from the secret below) used to sign/verify capabilities.",
+                  "title": "signingKeyPath",
+                  "type": "string"
+                },
+                "signingKeySecretName": {
+                  "default": "remote-connect-signing-key",
+                  "description": "Secret holding signing.pem, mounted at signingKeyPath. Created by the chart unless generateSigningKey is false.",
+                  "title": "signingKeySecretName",
+                  "type": "string"
+                },
+                "sniSuffix": {
+                  "default": "remote-connect",
+                  "description": "Suffix appended to the data-plane namespace to form each agent's SNI host.",
+                  "title": "sniSuffix",
+                  "type": "string"
+                },
+                "ttlSeconds": {
+                  "default": 1800,
+                  "description": "Capability lifetime in seconds.",
+                  "title": "ttlSeconds",
+                  "type": "integer"
+                }
+              },
+              "required": [],
+              "title": "remoteConnect",
               "type": "object"
             },
             "security": {

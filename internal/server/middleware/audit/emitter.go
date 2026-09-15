@@ -6,7 +6,6 @@ package audit
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -30,9 +29,13 @@ type Emitter struct {
 }
 
 // NewEmitter creates an Emitter from an immutable policy set and one or more
-// sinks. serviceName identifies the emitting process (e.g. "openchoreo-api")
-// and is stamped onto every event by buildEvent, once, rather than by each
-// sink — so multiple sinks can't disagree about one event's identity.
+// sinks. serviceName is published as the event's "producer" and is stamped by
+// buildEvent, once, rather than by each sink — so multiple sinks can't
+// disagree about one event's identity.
+//
+// It must match the deployed workload's name ("openchoreo-api", "observer"),
+// not the API it serves ("observer-api"): routing and indexing downstream key
+// on this value, as do tools/auditgen and tools/auditcoverage.
 //
 // policies must not be nil: Emit calls policies.Resolve on every event, so a
 // nil PolicySet would return an error.
@@ -51,7 +54,7 @@ func (e *Emitter) Emit(_ context.Context, op *Operation, env Envelope) {
 	settings := e.policies.Resolve(ResolveContext{
 		Operation: op,
 		Actor:     env.Actor,
-		Origin:    env.Origin,
+		Surface:   env.Surface,
 		Result:    env.Result,
 	})
 	if !settings.Publish {
@@ -65,10 +68,12 @@ func (e *Emitter) Emit(_ context.Context, op *Operation, env Envelope) {
 }
 
 // buildEvent maps an Operation and Envelope into the Event every surface
-// emits, stamping EventID, Timestamp, and Service exactly once here. Both
-// REST and MCP build their own Envelope and hand it to Emit, which calls this
-// same function, so the two surfaces can't drift into differently-shaped
-// events.
+// emits, stamping EventID and Producer exactly once here. Both REST and MCP
+// build their own Envelope and hand it to Emit, which calls this same
+// function, so the two surfaces can't drift into differently-shaped events.
+//
+// It reads no clock: this runs after the handler returned, so a timestamp here
+// would report the response's completion. See RequestInfo.
 func buildEvent(op *Operation, env Envelope, serviceName string) *Event {
 	eventID, err := uuid.NewV7()
 	eventIDStr := eventID.String()
@@ -79,14 +84,17 @@ func buildEvent(op *Operation, env Envelope, serviceName string) *Event {
 
 	event := &Event{
 		EventID:   eventIDStr,
-		Timestamp: time.Now(),
-		Service:   serviceName,
+		EventTime: env.Request.EventTime,
+		Producer:  serviceName,
 		Actor:     env.Actor,
 		Result:    env.Result,
-		Origin:    env.Origin,
-		Resource:  env.Resource,
+		Surface:   env.Surface,
+		HTTP:      env.Request.HTTP,
+		Resource:  withHierarchyNamespaceFallback(env.Resource, env.Hierarchy),
+		Hierarchy: env.Hierarchy,
 		RequestID: env.RequestID,
 		SourceIP:  env.SourceIP,
+		UserAgent: env.UserAgent,
 		Metadata:  env.Metadata,
 	}
 	if op != nil {
@@ -96,4 +104,30 @@ func buildEvent(op *Operation, env Envelope, serviceName string) *Event {
 		event.ResourceType = op.ResourceType
 	}
 	return event
+}
+
+// withHierarchyNamespaceFallback fills resource.Namespace from h.Namespace
+// when resource carries none itself — e.g. CreateNamespace, whose REST path
+// has no {namespaceName} to seed from, but whose authz check already knows
+// ns.Name. Namespace's existing source (a handler's SetResource call, or the
+// surface adapter's pre-call seed) stays authoritative: this only fills a gap,
+// never overrides.
+//
+// Returns a shallow copy rather than mutating resource in place: resource is
+// the same *Resource pointer AuditData holds for the lifetime of the request,
+// so mutating it here would leak this fallback into whatever the caller
+// (e.g. a later NewAuditContext caller reading it back) still holds.
+func withHierarchyNamespaceFallback(resource *Resource, h Hierarchy) *Resource {
+	if h.Namespace == "" {
+		return resource
+	}
+	if resource == nil {
+		return &Resource{Namespace: h.Namespace}
+	}
+	if resource.Namespace != "" {
+		return resource
+	}
+	cp := *resource
+	cp.Namespace = h.Namespace
+	return &cp
 }

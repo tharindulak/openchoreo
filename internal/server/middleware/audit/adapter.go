@@ -7,6 +7,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -49,7 +51,14 @@ func ExtractActor(ctx context.Context) Actor {
 		actorID = subjectCtx.ID
 	}
 
-	actor := Actor{Type: actorType, ID: actorID}
+	// SessionID is empty whenever the IdP issues no sid claim, which OIDC
+	// leaves optional.
+	actor := Actor{
+		Type:      actorType,
+		ID:        actorID,
+		Issuer:    subjectCtx.Issuer,
+		SessionID: subjectCtx.SessionID,
+	}
 	// Omit the entry entirely when there's no entitlement claim, rather than
 	// recording an empty-keyed one that would log a spurious "entitlements":{"":null}.
 	if subjectCtx.EntitlementClaim != "" {
@@ -58,25 +67,71 @@ func ExtractActor(ctx context.Context) Actor {
 	return actor
 }
 
-// maxRequestIDLen bounds the client-supplied X-Request-ID recorded in audit
-// events. Without a cap, a client can send an oversized header value (up to
-// the server's MaxHeaderBytes limit) and inflate every audit record — and
-// every sink — for that request. 128 comfortably fits a UUID (36 chars) or a
-// typical trace ID with room for prefixes.
-const maxRequestIDLen = 128
+// newUUID returns a UUID v7, falling back to v4 if v7 generation fails.
+func newUUID() string {
+	if id, err := uuid.NewV7(); err == nil {
+		return id.String()
+	}
+	return uuid.New().String()
+}
 
-// RequestIDFromHeader returns the X-Request-ID header value, generating a
-// fresh UUID v7 if absent or too long. Shared by every surface adapter.
+// NewRequestInfo captures the facts an audit event needs from a request as it
+// arrives. Pass nil for httpInfo on a surface with no request line.
+func NewRequestInfo(httpInfo *HTTPInfo) RequestInfo {
+	return RequestInfo{
+		EventTime: time.Now(),
+		HTTP:      httpInfo,
+	}
+}
+
+// HTTPInfoFromRequest records r's request line: the decoded path, query string
+// excluded.
+//
+// Decoded (URL.Path, not EscapedPath) so it agrees with r.PathValue, which the
+// resource group is seeded from. Not length-capped: bounding client input
+// belongs in validation or MaxHeaderBytes, not here.
+func HTTPInfoFromRequest(r *http.Request) *HTTPInfo {
+	return &HTTPInfo{
+		Method: r.Method,
+		Path:   r.URL.Path,
+	}
+}
+
+// requestIDRejections counts inbound X-Request-ID headers rejected for not
+// parsing as a UUID. An absent header isn't a rejection, so it doesn't
+// increment this.
+var requestIDRejections atomic.Int64
+
+// RequestIDRejections returns the number of inbound X-Request-ID headers
+// rejected so far because they didn't parse as a UUID.
+func RequestIDRejections() int64 {
+	return requestIDRejections.Load()
+}
+
+// RequestIDFromHeader returns the X-Request-ID header value if it parses as a
+// UUID, generating a fresh UUID v7 otherwise (absent, malformed, or an
+// arbitrary client-chosen string). Shared by every surface adapter.
+//
+// A client-chosen value reaches Event.RequestID verbatim otherwise, so
+// without validation a client could inflate every audit record for its
+// request with an oversized or arbitrary string. Requiring a valid UUID
+// bounds it to a fixed shape.
+//
+// On REST and MCP, logger.Middleware already runs this same validation
+// against the inbound header and normalizes it before this ever executes, so
+// here it's a no-op in the common case — this stays so the audit envelope is
+// still well-formed if that ever changes. exec and wirelogs have no logger
+// middleware in front of them (see NewExecWirelogsAuditMiddleware), so this
+// is their only validation and normalization point.
 func RequestIDFromHeader(h http.Header) string {
 	requestID := h.Get("X-Request-ID")
-	if requestID == "" || len(requestID) > maxRequestIDLen {
-		if id, err := uuid.NewV7(); err == nil {
-			requestID = id.String()
-		} else {
-			requestID = uuid.New().String() // fallback if v7 generation fails
+	if requestID != "" {
+		if _, err := uuid.Parse(requestID); err == nil {
+			return requestID
 		}
+		requestIDRejections.Add(1)
 	}
-	return requestID
+	return newUUID()
 }
 
 // SourceIPFromHeader extracts the client IP from proxy headers
@@ -119,7 +174,7 @@ func SourceIPFromHeader(h http.Header) string {
 // Envelope differently. sourceIPFallback applies only when the header carries
 // no IP hint — REST passes r.RemoteAddr, MCP passes "".
 func EmitFromContext(
-	ctx context.Context, emitter *Emitter, op *Operation, origin Origin, result Result,
+	ctx context.Context, emitter *Emitter, op *Operation, surface Surface, result Result,
 	auditData *AuditData, header http.Header, sourceIPFallback string,
 ) {
 	sourceIP := SourceIPFromHeader(header)
@@ -127,12 +182,15 @@ func EmitFromContext(
 		sourceIP = sourceIPFallback
 	}
 	env := Envelope{
-		Origin:    origin,
+		Surface:   surface,
 		Actor:     ExtractActor(ctx),
 		Result:    result,
 		Resource:  auditData.Resource,
+		Hierarchy: auditData.Hierarchy,
+		Request:   auditData.Request,
 		RequestID: RequestIDFromHeader(header),
 		SourceIP:  sourceIP,
+		UserAgent: header.Get("User-Agent"),
 		Metadata:  auditData.Metadata,
 	}
 	emitter.Emit(ctx, op, env)

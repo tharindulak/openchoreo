@@ -34,6 +34,14 @@ const (
 	testSpanID      = "span-def456"
 	sortOrderAsc    = "asc"
 	sortOrderDesc   = "desc"
+	logLevelError   = "ERROR"
+	logLevelWarn    = "WARN"
+
+	testClusterInstance = "cluster1"
+	testK8sNamespace    = "openchoreo-control-plane"
+	testPodName         = "controller-manager-7f58b689b5-pwsb5"
+	testContainerName   = "manager"
+	testLabelSelector   = "openchoreo.dev/plane=controlplane"
 )
 
 // ---- Mock service implementations ----
@@ -70,6 +78,60 @@ func (m *MockLogsQuerier) lastRequest() *types.LogsQueryRequest {
 }
 
 func (m *MockLogsQuerier) reset() { m.requests = nil }
+
+type MockPlatformLogsQuerier struct {
+	logsRequests   []*types.PlatformLogsQueryRequest
+	valuesRequests []*types.PlatformLogFilterValuesRequest
+	logsResponse   *types.PlatformLogsResponse
+	valuesResponse *types.PlatformLogFilterValuesResponse
+	logsErr        error
+	valuesErr      error
+}
+
+func NewMockPlatformLogsQuerier() *MockPlatformLogsQuerier {
+	return &MockPlatformLogsQuerier{
+		logsResponse: &types.PlatformLogsResponse{
+			Logs: []types.PlatformLog{
+				{Timestamp: testStartTime, Log: "reconcile failed", Level: logLevelError, PodName: testPodName},
+			},
+			Total:  1,
+			TookMs: 4,
+		},
+		valuesResponse: &types.PlatformLogFilterValuesResponse{
+			Values:      []types.PlatformLogFilterValue{{Value: testPodName, Count: 1}},
+			TotalValues: 1,
+			TookMs:      2,
+		},
+	}
+}
+
+func (m *MockPlatformLogsQuerier) QueryPlatformLogs(_ context.Context, req *types.PlatformLogsQueryRequest) (*types.PlatformLogsResponse, error) {
+	m.logsRequests = append(m.logsRequests, req)
+	if m.logsErr != nil {
+		return nil, m.logsErr
+	}
+	return m.logsResponse, nil
+}
+
+func (m *MockPlatformLogsQuerier) QueryPlatformLogFilterValues(_ context.Context, req *types.PlatformLogFilterValuesRequest) (*types.PlatformLogFilterValuesResponse, error) {
+	m.valuesRequests = append(m.valuesRequests, req)
+	if m.valuesErr != nil {
+		return nil, m.valuesErr
+	}
+	return m.valuesResponse, nil
+}
+
+func (m *MockPlatformLogsQuerier) lastRequest() *types.PlatformLogsQueryRequest {
+	if len(m.logsRequests) == 0 {
+		return nil
+	}
+	return m.logsRequests[len(m.logsRequests)-1]
+}
+
+func (m *MockPlatformLogsQuerier) reset() {
+	m.logsRequests = nil
+	m.valuesRequests = nil
+}
 
 type MockEventsQuerier struct {
 	requests []*types.EventsQueryRequest
@@ -145,7 +207,6 @@ type MockTracesQuerier struct {
 	spansRequests       []*types.TracesQueryRequest
 	spanDetailsTraceIDs []string
 	spanDetailsSpanIDs  []string
-	spanDetailsScopes   []types.ComponentSearchScope
 	tracesResponse      *types.TracesQueryResponse
 	spansResponse       *types.SpansQueryResponse
 	spanInfo            *types.SpanInfo
@@ -196,12 +257,9 @@ func (m *MockTracesQuerier) QuerySpans(_ context.Context, traceID string, req *t
 	return m.spansResponse, nil
 }
 
-func (m *MockTracesQuerier) QuerySpanDetails(_ context.Context, traceID string, spanID string,
-	scope types.ComponentSearchScope,
-) (*types.SpanInfo, error) {
+func (m *MockTracesQuerier) GetSpanDetails(_ context.Context, traceID string, spanID string) (*types.SpanInfo, error) {
 	m.spanDetailsTraceIDs = append(m.spanDetailsTraceIDs, traceID)
 	m.spanDetailsSpanIDs = append(m.spanDetailsSpanIDs, spanID)
-	m.spanDetailsScopes = append(m.spanDetailsScopes, scope)
 	if m.spanDetailsErr != nil {
 		return nil, m.spanDetailsErr
 	}
@@ -227,7 +285,6 @@ func (m *MockTracesQuerier) reset() {
 	m.spansRequests = nil
 	m.spanDetailsTraceIDs = nil
 	m.spanDetailsSpanIDs = nil
-	m.spanDetailsScopes = nil
 }
 
 type MockAlertIncidentService struct {
@@ -264,6 +321,10 @@ func (m *MockAlertIncidentService) QueryIncidents(_ context.Context, req gen.Inc
 
 func (m *MockAlertIncidentService) UpdateIncident(_ context.Context, _ string, _ gen.IncidentPutRequest) (*gen.IncidentPutResponse, error) {
 	return &gen.IncidentPutResponse{}, nil
+}
+
+func (m *MockAlertIncidentService) IncidentScope(_ context.Context, _ string) (string, string, string, error) {
+	return "", "", "", nil
 }
 
 func (m *MockAlertIncidentService) lastAlertsRequest() *gen.AlertsQueryRequest {
@@ -340,6 +401,7 @@ func (m *MockFinOpsQuerier) reset() {
 
 type testServices struct {
 	logs            *MockLogsQuerier
+	platformLogs    *MockPlatformLogsQuerier
 	events          *MockEventsQuerier
 	metrics         *MockMetricsQuerier
 	traces          *MockTracesQuerier
@@ -350,6 +412,7 @@ type testServices struct {
 func newTestServices() *testServices {
 	return &testServices{
 		logs:            NewMockLogsQuerier(),
+		platformLogs:    NewMockPlatformLogsQuerier(),
 		events:          NewMockEventsQuerier(),
 		metrics:         NewMockMetricsQuerier(),
 		traces:          NewMockTracesQuerier(),
@@ -360,6 +423,7 @@ func newTestServices() *testServices {
 
 func (s *testServices) resetAll() {
 	s.logs.reset()
+	s.platformLogs.reset()
 	s.events.reset()
 	s.metrics.reset()
 	s.traces.reset()
@@ -373,7 +437,8 @@ func buildMCPHandler(svcs *testServices) (*MCPHandler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewMCPHandler(healthSvc, svcs.logs, svcs.events, svcs.metrics, svcs.alertsIncidents, svcs.traces, svcs.finops, logger)
+	return NewMCPHandler(healthSvc, svcs.logs, svcs.platformLogs, svcs.events, svcs.metrics, svcs.alertsIncidents,
+		svcs.traces, svcs.finops, logger)
 }
 
 func setupTestServer(t *testing.T) (*mcpsdk.ClientSession, *testServices) {
@@ -440,7 +505,7 @@ var allToolSpecs = []toolTestSpec{
 			"start_time":    testStartTime,
 			"end_time":      testEndTime,
 			"search_phrase": "error",
-			"log_levels":    []any{"ERROR", "WARN"},
+			"log_levels":    []any{logLevelError, logLevelWarn},
 			"limit":         50,
 			"sort_order":    sortOrderAsc,
 		},
@@ -458,7 +523,7 @@ var allToolSpecs = []toolTestSpec{
 			assert.Equal(t, testStartTime, req.StartTime)
 			assert.Equal(t, testEndTime, req.EndTime)
 			assert.Equal(t, "error", req.SearchPhrase)
-			if diff := cmp.Diff([]string{"ERROR", "WARN"}, req.LogLevels); diff != "" {
+			if diff := cmp.Diff([]string{logLevelError, logLevelWarn}, req.LogLevels); diff != "" {
 				t.Errorf("log_levels mismatch (-want +got):\n%s", diff)
 			}
 			assert.Equal(t, 50, req.Limit)
@@ -478,7 +543,7 @@ var allToolSpecs = []toolTestSpec{
 			"start_time":        testStartTime,
 			"end_time":          testEndTime,
 			"search_phrase":     "failed",
-			"log_levels":        []any{"ERROR"},
+			"log_levels":        []any{logLevelError},
 			"limit":             75,
 			"sort_order":        sortOrderDesc,
 		},
@@ -493,11 +558,69 @@ var allToolSpecs = []toolTestSpec{
 			assert.Equal(t, "my-workflow-run", scope.WorkflowRunName)
 			assert.Equal(t, "build-step", scope.TaskName)
 			assert.Equal(t, "failed", req.SearchPhrase)
-			if diff := cmp.Diff([]string{"ERROR"}, req.LogLevels); diff != "" {
+			if diff := cmp.Diff([]string{logLevelError}, req.LogLevels); diff != "" {
 				t.Errorf("log_levels mismatch (-want +got):\n%s", diff)
 			}
 			assert.Equal(t, 75, req.Limit)
 			assert.Equal(t, sortOrderDesc, req.SortOrder)
+		},
+	},
+	{
+		name:                "query_platform_logs",
+		descriptionKeywords: []string{"platform", "control plane"},
+		descriptionMinLen:   20,
+		requiredParams:      []string{"start_time", "end_time"},
+		optionalParams: []string{
+			"cluster_instance", "kubernetes_namespace", "pod_name", "container_name", "labels",
+			"search_phrase", "log_levels", "limit", "sort_order", "include_sources", "max_sources",
+		},
+		testArgs: map[string]any{
+			"cluster_instance":     []any{testClusterInstance},
+			"kubernetes_namespace": []any{testK8sNamespace},
+			"pod_name":             []any{testPodName},
+			"container_name":       []any{testContainerName},
+			"labels":               testLabelSelector,
+			"start_time":           testStartTime,
+			"end_time":             testEndTime,
+			"search_phrase":        "reconcile",
+			"log_levels":           []any{logLevelError},
+			"limit":                50,
+			"sort_order":           sortOrderAsc,
+			"include_sources":      []any{"pod_name"},
+			"max_sources":          5,
+		},
+		validateCall: func(t *testing.T, svcs *testServices) {
+			t.Helper()
+			req := svcs.platformLogs.lastRequest()
+			require.NotNil(t, req, "Expected QueryPlatformLogs to be called")
+			if diff := cmp.Diff([]string{testClusterInstance}, req.ClusterInstances); diff != "" {
+				t.Errorf("cluster_instance mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff([]string{testK8sNamespace}, req.Namespaces); diff != "" {
+				t.Errorf("kubernetes_namespace mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff([]string{testPodName}, req.PodNames); diff != "" {
+				t.Errorf("pod_name mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff([]string{testContainerName}, req.ContainerNames); diff != "" {
+				t.Errorf("container_name mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(map[string]string{"openchoreo.dev/plane": "controlplane"}, req.Labels); diff != "" {
+				t.Errorf("labels mismatch (-want +got):\n%s", diff)
+			}
+			assert.Equal(t, testStartTime, req.StartTime)
+			assert.Equal(t, testEndTime, req.EndTime)
+			assert.Equal(t, "reconcile", req.SearchPhrase)
+			if diff := cmp.Diff([]string{logLevelError}, req.LogLevels); diff != "" {
+				t.Errorf("log_levels mismatch (-want +got):\n%s", diff)
+			}
+			assert.Equal(t, 50, req.Limit)
+			assert.Equal(t, sortOrderAsc, req.SortOrder)
+
+			require.Len(t, svcs.platformLogs.valuesRequests, 1, "include_sources should trigger one aggregation")
+			values := svcs.platformLogs.valuesRequests[0]
+			assert.Equal(t, "podName", values.Filter)
+			assert.Equal(t, 5, values.MaxValues)
 		},
 	},
 	{
@@ -680,29 +803,19 @@ var allToolSpecs = []toolTestSpec{
 		name:                "get_span_details",
 		descriptionKeywords: []string{"span"},
 		descriptionMinLen:   20,
-		requiredParams:      []string{"trace_id", "span_id", "namespace"},
-		optionalParams:      []string{"project", "component", "environment"},
+		requiredParams:      []string{"trace_id", "span_id"},
+		optionalParams:      []string{},
 		testArgs: map[string]any{
-			"trace_id":    testTraceID,
-			"span_id":     testSpanID,
-			"namespace":   testNamespace,
-			"project":     testProject,
-			"component":   testComponent,
-			"environment": testEnvironment,
+			"trace_id": testTraceID,
+			"span_id":  testSpanID,
 		},
 		validateCall: func(t *testing.T, svcs *testServices) {
 			t.Helper()
-			require.NotEmpty(t, svcs.traces.spanDetailsTraceIDs, "Expected QuerySpanDetails to be called")
-			require.NotEmpty(t, svcs.traces.spanDetailsSpanIDs, "Expected QuerySpanDetails to be called")
-			require.NotEmpty(t, svcs.traces.spanDetailsScopes, "Expected QuerySpanDetails scope to be recorded")
+			require.NotEmpty(t, svcs.traces.spanDetailsTraceIDs, "Expected GetSpanDetails to be called")
+			require.NotEmpty(t, svcs.traces.spanDetailsSpanIDs, "Expected GetSpanDetails to be called")
 			lastIdx := len(svcs.traces.spanDetailsSpanIDs) - 1
 			assert.Equal(t, testTraceID, svcs.traces.spanDetailsTraceIDs[lastIdx])
 			assert.Equal(t, testSpanID, svcs.traces.spanDetailsSpanIDs[lastIdx])
-			scope := svcs.traces.spanDetailsScopes[lastIdx]
-			assert.Equal(t, testNamespace, scope.Namespace)
-			assert.Equal(t, testProject, scope.Project)
-			assert.Equal(t, testComponent, scope.Component)
-			assert.Equal(t, testEnvironment, scope.Environment)
 		},
 	},
 	{
@@ -843,6 +956,7 @@ func TestNewMCPHandlerValidation(t *testing.T) {
 	healthSvc, _ := service.NewHealthService(logger)
 	alertIncidentSvc := NewMockAlertIncidentService()
 	logs := NewMockLogsQuerier()
+	platformLogs := NewMockPlatformLogsQuerier()
 	events := NewMockEventsQuerier()
 	metrics := NewMockMetricsQuerier()
 	traces := NewMockTracesQuerier()
@@ -852,6 +966,7 @@ func TestNewMCPHandlerValidation(t *testing.T) {
 		name                 string
 		health               *service.HealthService
 		logs                 service.LogsQuerier
+		platformLogs         service.PlatformLogsQuerier
 		events               service.EventsQuerier
 		metrics              service.MetricsQuerier
 		alertIncidentService service.AlertIncidentService
@@ -859,19 +974,21 @@ func TestNewMCPHandlerValidation(t *testing.T) {
 		finops               service.FinOpsQuerier
 		log                  *slog.Logger
 	}{
-		{"nil healthService", nil, logs, events, metrics, alertIncidentSvc, traces, finops, logger},
-		{"nil logsService", healthSvc, nil, events, metrics, alertIncidentSvc, traces, finops, logger},
-		{"nil eventsService", healthSvc, logs, nil, metrics, alertIncidentSvc, traces, finops, logger},
-		{"nil metricsService", healthSvc, logs, events, nil, alertIncidentSvc, traces, finops, logger},
-		{"nil alertIncidentService", healthSvc, logs, events, metrics, nil, traces, finops, logger},
-		{"nil tracesService", healthSvc, logs, events, metrics, alertIncidentSvc, nil, finops, logger},
-		{"nil finopsService", healthSvc, logs, events, metrics, alertIncidentSvc, traces, nil, logger},
-		{"nil logger", healthSvc, logs, events, metrics, alertIncidentSvc, traces, finops, nil},
+		{"nil healthService", nil, logs, platformLogs, events, metrics, alertIncidentSvc, traces, finops, logger},
+		{"nil logsService", healthSvc, nil, platformLogs, events, metrics, alertIncidentSvc, traces, finops, logger},
+		{"nil platformLogsService", healthSvc, logs, nil, events, metrics, alertIncidentSvc, traces, finops, logger},
+		{"nil eventsService", healthSvc, logs, platformLogs, nil, metrics, alertIncidentSvc, traces, finops, logger},
+		{"nil metricsService", healthSvc, logs, platformLogs, events, nil, alertIncidentSvc, traces, finops, logger},
+		{"nil alertIncidentService", healthSvc, logs, platformLogs, events, metrics, nil, traces, finops, logger},
+		{"nil tracesService", healthSvc, logs, platformLogs, events, metrics, alertIncidentSvc, nil, finops, logger},
+		{"nil finopsService", healthSvc, logs, platformLogs, events, metrics, alertIncidentSvc, traces, nil, logger},
+		{"nil logger", healthSvc, logs, platformLogs, events, metrics, alertIncidentSvc, traces, finops, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewMCPHandler(tt.health, tt.logs, tt.events, tt.metrics, tt.alertIncidentService, tt.traces, tt.finops, tt.log)
+			_, err := NewMCPHandler(tt.health, tt.logs, tt.platformLogs, tt.events, tt.metrics,
+				tt.alertIncidentService, tt.traces, tt.finops, tt.log)
 			require.Error(t, err, "Expected error for %s", tt.name)
 		})
 	}
@@ -1109,6 +1226,14 @@ func TestMinimalParameterSets(t *testing.T) {
 			},
 		},
 		{
+			name:     "query_platform_logs_minimal",
+			toolName: "query_platform_logs",
+			args: map[string]any{
+				"start_time": testStartTime,
+				"end_time":   testEndTime,
+			},
+		},
+		{
 			name:     "query_resource_metrics_minimal",
 			toolName: "query_resource_metrics",
 			args: map[string]any{
@@ -1149,9 +1274,8 @@ func TestMinimalParameterSets(t *testing.T) {
 			name:     "get_span_details_minimal",
 			toolName: "get_span_details",
 			args: map[string]any{
-				"trace_id":  testTraceID,
-				"span_id":   testSpanID,
-				"namespace": testNamespace,
+				"trace_id": testTraceID,
+				"span_id":  testSpanID,
 			},
 		},
 		{
@@ -1298,9 +1422,8 @@ func TestHandlerErrorPropagation(t *testing.T) {
 			name:     "span_details_service_error",
 			toolName: "get_span_details",
 			args: map[string]any{
-				"trace_id":  testTraceID,
-				"span_id":   testSpanID,
-				"namespace": testNamespace,
+				"trace_id": testTraceID,
+				"span_id":  testSpanID,
 			},
 			setupErr: func(s *testServices) { s.traces.spanDetailsErr = errors.New("span not found") },
 		},
@@ -1440,6 +1563,23 @@ func TestOptionalParametersDefaults(t *testing.T) {
 				require.NotNil(t, req, "Expected QueryLogs to be called")
 				assert.Equal(t, 100, req.Limit)
 				assert.Equal(t, sortOrderDesc, req.SortOrder)
+			},
+		},
+		{
+			name:     "platform_logs_default_limit_and_sort",
+			toolName: "query_platform_logs",
+			args: map[string]any{
+				"start_time": testStartTime,
+				"end_time":   testEndTime,
+			},
+			validateCall: func(t *testing.T, svcs *testServices) {
+				req := svcs.platformLogs.lastRequest()
+				require.NotNil(t, req, "Expected QueryPlatformLogs to be called")
+				assert.Equal(t, 100, req.Limit)
+				assert.Equal(t, sortOrderDesc, req.SortOrder)
+				assert.Empty(t, req.Labels)
+				assert.Empty(t, svcs.platformLogs.valuesRequests,
+					"no include_sources means no aggregation is issued")
 			},
 		},
 		{
@@ -1591,6 +1731,21 @@ func TestSchemaPropertyTypes(t *testing.T) {
 			"limit":             "number",
 			"sort_order":        "string",
 		},
+		"query_platform_logs": {
+			"cluster_instance":     "array",
+			"kubernetes_namespace": "array",
+			"pod_name":             "array",
+			"container_name":       "array",
+			"labels":               "string",
+			"start_time":           "string",
+			"end_time":             "string",
+			"search_phrase":        "string",
+			"log_levels":           "array",
+			"limit":                "number",
+			"sort_order":           "string",
+			"include_sources":      "array",
+			"max_sources":          "number",
+		},
 		"query_component_events": {
 			"namespace":   "string",
 			"project":     "string",
@@ -1649,12 +1804,8 @@ func TestSchemaPropertyTypes(t *testing.T) {
 			"sort_order":  "string",
 		},
 		"get_span_details": {
-			"trace_id":    "string",
-			"span_id":     "string",
-			"namespace":   "string",
-			"project":     "string",
-			"component":   "string",
-			"environment": "string",
+			"trace_id": "string",
+			"span_id":  "string",
 		},
 	}
 

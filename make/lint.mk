@@ -9,6 +9,7 @@ ALL_GO_FILES := $(shell \
 		! -path './internal/openchoreo-api/api/gen/*' \
 		! -path './api/v1alpha1/zz_generated.deepcopy.go' \
 		! -path './internal/observer/api/gen/*' \
+		! -path './internal/observer/api/internalgen/*' \
 		! -path './internal/observer/api/logsadapterclientgen/*' \
 		! -path './internal/observer/api/finopsadapterclientgen/*' \
 		! -path './samples/*' \
@@ -97,7 +98,9 @@ GETTING_STARTED_FILES := \
 	$(GETTING_STARTED_DIR)/ci-workflows/gcp-buildpacks-builder.yaml \
 	$(GETTING_STARTED_DIR)/ci-workflows/ballerina-buildpack-builder.yaml \
 	$(GETTING_STARTED_DIR)/ci-workflows/dockerfile-builder.yaml \
-	$(GETTING_STARTED_DIR)/component-traits/alert-rule-trait.yaml
+	$(GETTING_STARTED_DIR)/component-traits/alert-rule-trait.yaml \
+	$(GETTING_STARTED_DIR)/component-traits/hpa-trait.yaml \
+	$(GETTING_STARTED_DIR)/component-traits/pvc-trait.yaml
 
 .PHONY: samples-gen
 samples-gen: ## Generate samples/getting-started/all.yaml from individual files
@@ -157,7 +160,7 @@ workflow-templates-gen: ## Generate samples/getting-started/workflow-templates.y
 	@echo "✓ Generated $(GETTING_STARTED_DIR)/workflow-templates.yaml"
 
 .PHONY: code.gen
-code.gen: manifests generate openapi-codegen go.mod.lint helm-generate samples-gen workflow-templates-gen mockery-gen ## Generate code and fix the code with linter
+code.gen: manifests generate openapi-codegen go.mod.lint helm-generate samples-gen workflow-templates-gen mockery-gen audit-gen ## Generate code and fix the code with linter
 
 .PHONY: code.gen-check
 code.gen-check: code.gen ## Verify the clean Git status after code generation

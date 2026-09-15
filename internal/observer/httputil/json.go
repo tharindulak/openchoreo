@@ -6,44 +6,25 @@ package httputil
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 )
 
-// BindJSON reads JSON from the request body and unmarshals it into the provided interface
-func BindJSON(r *http.Request, v interface{}) error {
-	if r.Body == nil {
-		return fmt.Errorf("request body is empty")
-	}
-	defer r.Body.Close()
-
-	// Check content type
-	contentType := r.Header.Get("Content-Type")
-	if contentType != "" && !strings.HasPrefix(contentType, "application/json") {
-		return fmt.Errorf("invalid content type: %s", contentType)
-	}
-
-	// Read and decode JSON
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read request body: %w", err)
-	}
-
-	if len(body) == 0 {
-		return fmt.Errorf("request body is empty")
-	}
-
-	if err := json.Unmarshal(body, v); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON: %w", err)
-	}
-
-	return nil
-}
-
-// WriteJSON marshals the provided interface to JSON and writes it to the response
+// WriteJSON marshals the provided interface to JSON and writes it to the response.
+//
+// Cache-Control defaults to no-store. Almost everything this API returns is scoped
+// to the caller's identity, and a response with no cache directive is heuristically
+// cacheable by a browser - so without this, a shared profile could serve one
+// subject's data to the next after a re-login. It matters most on the GET endpoints
+// (platform logs, FinOps costs, span details), since POST responses are not
+// heuristically cached.
+//
+// A caller that genuinely serves public, identity-independent data may set
+// Cache-Control before calling and it will be left alone.
 func WriteJSON(w http.ResponseWriter, status int, v interface{}) error {
 	w.Header().Set("Content-Type", "application/json")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 
 	if v == nil {
@@ -55,9 +36,4 @@ func WriteJSON(w http.ResponseWriter, status int, v interface{}) error {
 	}
 
 	return nil
-}
-
-// GetPathParam extracts a path parameter from the URL using the new Go 1.22 pattern matching
-func GetPathParam(r *http.Request, key string) string {
-	return r.PathValue(key)
 }

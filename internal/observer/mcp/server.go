@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -13,6 +14,19 @@ import (
 
 // NewHTTPServer creates a new MCP HTTP server for the observer API
 func NewHTTPServer(handler *MCPHandler) http.Handler {
+	server := NewServer(handler)
+
+	return mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
+		return server
+	}, nil)
+}
+
+// NewServer creates the MCP server with every observer tool registered.
+//
+// Exported so the audit coverage gate can enumerate the registered tools over
+// the protocol rather than trusting a hand-maintained list — the SDK offers no
+// way to read tools back off a *Server directly.
+func NewServer(handler *MCPHandler) *mcpsdk.Server {
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "openchoreo-observer",
 		Version: "1.0.0",
@@ -20,9 +34,7 @@ func NewHTTPServer(handler *MCPHandler) http.Handler {
 
 	registerTools(server, handler)
 
-	return mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
-		return server
-	}, nil)
+	return server
 }
 
 // handleToolResult marshals the result to JSON and wraps it in MCP CallToolResult format
@@ -111,6 +123,69 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 			args.Namespace, args.WorkflowRunName, args.TaskName,
 			args.StartTime, args.EndTime, args.SearchPhrase,
 			args.LogLevels, args.Limit, args.SortOrder,
+		)
+		return handleToolResult(result, err)
+	})
+
+	// Tool: query_platform_logs
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name: "query_platform_logs",
+		Description: "Query logs from OpenChoreo's own platform components - the control plane " +
+			"(controller-manager, openchoreo-api, cluster-gateway), the data plane agents and gateways, " +
+			"and the workflow and observability plane infrastructure. This is the operator's view of the " +
+			"platform itself, not of user workloads: it is addressed by raw Kubernetes coordinates rather " +
+			"than by project, component and environment, so use query_component_logs for a deployed " +
+			"component's runtime logs. Multi-value filters match any of their values, and different " +
+			"filters must all match. Requires the cluster-scoped 'platformlogs:view' permission.",
+		InputSchema: createSchema(map[string]any{
+			"cluster_instance": arrayProperty(
+				"Clusters the logs were collected from, as named on each cluster's logs collector (e.g. ['cluster1'])"),
+			"kubernetes_namespace": arrayProperty(
+				"Kubernetes namespaces of the pods (e.g. ['openchoreo-control-plane']). " +
+					"This is a Kubernetes namespace, not the OpenChoreo organization namespace other tools take"),
+			"pod_name":       arrayProperty("Pod names (e.g. ['controller-manager-7f58b689b5-pwsb5'])"),
+			"container_name": arrayProperty("Container names within the pods (e.g. ['manager'])"),
+			"labels": stringProperty(
+				"Kubernetes label selector over the pod labels, as 'key=value' pairs joined by commas, " +
+					"where a comma means AND (the syntax 'kubectl -l' accepts). This is how a plane is selected: " +
+					"'openchoreo.dev/plane=controlplane' (or dataplane, workflowplane, observabilityplane), " +
+					"narrowed further with 'openchoreo.dev/plane-id=<planeID>'. Components OpenChoreo does not " +
+					"ship carry no plane label"),
+			"start_time":    stringProperty("Start of time range in RFC3339 format (e.g., 2025-11-04T08:29:02.452Z)"),
+			"end_time":      stringProperty("End of time range in RFC3339 format (e.g., 2025-11-04T09:29:02.452Z)"),
+			"search_phrase": stringProperty("Text to search within log messages"),
+			"log_levels":    arrayProperty("Log levels to filter (e.g., ['ERROR', 'WARN', 'INFO', 'DEBUG']). Default: all levels"),
+			"limit":         limitLogsProperty(),
+			"sort_order":    sortOrderProperty(),
+			"include_sources": enumArrayProperty(
+				"Also return a breakdown of which coordinates produced the matching logs, as the distinct "+
+					"values each named coordinate takes with a count for each, ordered by count descending. "+
+					"Use it to find where a problem is concentrated - include_sources ['pod_name'] with "+
+					"log_levels ['ERROR'] answers which pods are erroring and how much. To get only the "+
+					"breakdown, set limit to 1 so the log entries themselves cost nothing",
+				platformLogSourceFieldNames),
+			"max_sources": maxSourcesProperty(),
+		}, []string{"start_time", "end_time"}),
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
+		ClusterInstance     []string `json:"cluster_instance"`
+		KubernetesNamespace []string `json:"kubernetes_namespace"`
+		PodName             []string `json:"pod_name"`
+		ContainerName       []string `json:"container_name"`
+		Labels              string   `json:"labels"`
+		StartTime           string   `json:"start_time"`
+		EndTime             string   `json:"end_time"`
+		SearchPhrase        string   `json:"search_phrase"`
+		LogLevels           []string `json:"log_levels"`
+		Limit               int      `json:"limit"`
+		SortOrder           string   `json:"sort_order"`
+		IncludeSources      []string `json:"include_sources"`
+		MaxSources          int      `json:"max_sources"`
+	}) (*mcpsdk.CallToolResult, any, error) {
+		result, err := handler.QueryPlatformLogs(ctx,
+			args.ClusterInstance, args.KubernetesNamespace, args.PodName, args.ContainerName,
+			args.Labels, args.StartTime, args.EndTime, args.SearchPhrase,
+			args.LogLevels, args.Limit, args.SortOrder,
+			args.IncludeSources, args.MaxSources,
 		)
 		return handleToolResult(result, err)
 	})
@@ -324,28 +399,14 @@ func registerTools(s *mcpsdk.Server, handler *MCPHandler) {
 		Name:        "get_span_details",
 		Description: "Get full details for a specific span within a trace in OpenChoreo. Returns complete span information including attributes, resource attributes, parent span ID, and timing details. Use trace_id and span_id from query_trace_spans results.",
 		InputSchema: createSchema(map[string]any{
-			"trace_id":    stringProperty("Trace ID containing the span (required)"),
-			"span_id":     stringProperty("Span ID to retrieve details for (required)"),
-			"namespace":   stringProperty("Organization namespace (required)"),
-			"project":     stringProperty("Project name"),
-			"component":   stringProperty("Component name"),
-			"environment": stringProperty("Environment name"),
-		}, []string{"trace_id", "span_id", "namespace"}),
+			"trace_id": stringProperty("Trace ID containing the span (required)"),
+			"span_id":  stringProperty("Span ID to retrieve details for (required)"),
+		}, []string{"trace_id", "span_id"}),
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args struct {
-		TraceID     string `json:"trace_id"`
-		SpanID      string `json:"span_id"`
-		Namespace   string `json:"namespace"`
-		Project     string `json:"project"`
-		Component   string `json:"component"`
-		Environment string `json:"environment"`
+		TraceID string `json:"trace_id"`
+		SpanID  string `json:"span_id"`
 	}) (*mcpsdk.CallToolResult, any, error) {
-		if err := validateComponentScope(args.Namespace, args.Project, args.Component); err != nil {
-			return nil, nil, err
-		}
-		result, err := handler.GetSpanDetails(ctx,
-			args.TraceID, args.SpanID,
-			args.Namespace, args.Project, args.Component, args.Environment,
-		)
+		result, err := handler.GetSpanDetails(ctx, args.TraceID, args.SpanID)
 		return handleToolResult(result, err)
 	})
 
@@ -508,6 +569,25 @@ func limitProperty() map[string]any {
 	return map[string]any{
 		"type":        "number",
 		"description": "Maximum number of entries to return. Default: 100",
+	}
+}
+
+func maxSourcesProperty() map[string]any {
+	return map[string]any{
+		"type": "number",
+		"description": fmt.Sprintf(
+			"Maximum number of values to return per coordinate in 'sources'. Default: %d", defaultMaxSources),
+	}
+}
+
+func enumArrayProperty(description string, values []string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": description,
+		"items": map[string]any{
+			"type": "string",
+			"enum": values,
+		},
 	}
 }
 

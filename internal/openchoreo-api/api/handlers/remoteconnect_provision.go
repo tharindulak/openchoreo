@@ -1,0 +1,624 @@
+// Copyright 2026 The OpenChoreo Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package handlers
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/openchoreo/openchoreo/internal/labels"
+	"github.com/openchoreo/openchoreo/internal/openchoreo-api/config"
+	"github.com/openchoreo/openchoreo/internal/remoteconnect"
+)
+
+const (
+	// remoteAgentName is the fixed name of the remote-agent Deployment/Service/Secret within
+	// a project+env data-plane namespace (the namespace already scopes it, so one
+	// fixed name per namespace is unique).
+	remoteAgentName = "openchoreo-remote-agent"
+	// sniAnnotationKey holds each remote-agent Service's SNI host; the shared remote-connect
+	// SNI router reads it to route occ's connection to this agent. Must match the
+	// router's --sni-annotation (remoteagentrouter.DefaultSNIAnnotationKey).
+	sniAnnotationKey = "openchoreo.dev/remote-connect-sni"
+	// defaultSNISuffix is appended to the data-plane namespace to form an agent's SNI
+	// host when remote_connect.sni_suffix is unset.
+	defaultSNISuffix = "remote-connect"
+	// remoteAgentFieldOwner is the server-side-apply field manager for provisioned resources.
+	remoteAgentFieldOwner = "openchoreo-api-remote-connect"
+	// lastUsedAnnotation records the last time a resolve refreshed this remote-agent; the
+	// reaper deletes agents idle past the TTL.
+	lastUsedAnnotation = "openchoreo.dev/remote-connect-last-used"
+	// managedByLabelValue marks resources the remote-connect provisioner owns.
+	managedByLabelValue = "openchoreo-api-remote-connect"
+	// certValidity is the self-signed agent certificate lifetime.
+	certValidity = 90 * 24 * time.Hour
+	// certAnnotation carries the served cert's digest on the agent pod template.
+	certAnnotation = "openchoreo.dev/remote-connect-cert"
+	// protocolAnnotation carries the tunnel wire-protocol version on the agent pod
+	// template, so a version bump rolls agents whose image tag did not change.
+	protocolAnnotation = "openchoreo.dev/remote-connect-protocol"
+	// certRenewBefore is how long before expiry a stored agent cert is reissued, so a
+	// long-lived agent never serves an expired one.
+	certRenewBefore = 30 * 24 * time.Hour
+)
+
+// maxAgentReadNames caps how many object names one agent's Role may name. RBAC has no
+// label selectors, so the list is the only way to keep the grant from covering the whole
+// namespace — but it must not grow without bound either. Past the cap, provisioning
+// fails rather than silently widening the grant to the namespace.
+const maxAgentReadNames = 128
+
+// agentReadSet is the set of Secret and ConfigMap names one remote-agent must be able to
+// read for the sessions it is serving. It becomes the resourceNames of the agent's Role,
+// which is what keeps a compromised agent from reading objects no session asked for.
+type agentReadSet struct {
+	secrets    []string
+	configMaps []string
+}
+
+func (a *agentReadSet) add(kind, name string) {
+	if a == nil || name == "" {
+		return
+	}
+	switch kind {
+	case remoteconnect.SourceKindSecret:
+		a.secrets = appendUnique(a.secrets, name)
+	case remoteconnect.SourceKindConfigMap:
+		a.configMaps = appendUnique(a.configMaps, name)
+	}
+}
+
+func (a *agentReadSet) empty() bool {
+	return a == nil || (len(a.secrets) == 0 && len(a.configMaps) == 0)
+}
+
+func appendUnique(dst []string, v string) []string {
+	if slices.Contains(dst, v) {
+		return dst
+	}
+	return append(dst, v)
+}
+
+// agentEndpointInfo is what a provisioned remote-agent exposes to occ.
+type agentEndpointInfo struct {
+	endpoint   string // host:port occ dials
+	caBundle   string // PEM cert occ pins
+	serverName string // SAN occ verifies against
+}
+
+// remoteAgentProvisioner imperatively creates/updates a per-project+env remote-agent
+// (Deployment + L4 Service + cert Secret) in the data-plane namespace and reads back
+// its external address. Lifecycle is imperative (no CRD/controller): resolve
+// provisions on demand and stamps a last-used annotation; the reaper GCs idle agents.
+type remoteAgentProvisioner struct {
+	cfg    config.RemoteConnectConfig
+	now    func() time.Time
+	logger *slog.Logger
+}
+
+func newRemoteAgentProvisioner(cfg config.RemoteConnectConfig, logger *slog.Logger) *remoteAgentProvisioner {
+	return &remoteAgentProvisioner{cfg: cfg, now: time.Now, logger: logger.With("component", "remote-connect-provisioner")}
+}
+
+// agentSNI derives the agent's SNI host from its data-plane namespace (unique per
+// project+env) plus the configured suffix. occ sends this as the TLS SNI; the shared
+// router uses it to pick this agent; the agent's cert is signed for it.
+func (p *remoteAgentProvisioner) agentSNI(dpNamespace string) string {
+	suffix := p.cfg.SNISuffix
+	if suffix == "" {
+		suffix = defaultSNISuffix
+	}
+	return dpNamespace + "." + suffix
+}
+
+// ensureAgent applies the remote-agent resources (Deployment + ClusterIP Service + cert
+// Secret, plus the read RBAC when reads is non-empty) into dpNamespace via dpClient (a
+// proxy client to the data plane) and returns the endpoint occ should dial: the shared
+// SNI router's address, plus this agent's SNI + cert. It is idempotent: repeated calls
+// refresh the last-used annotation and reuse the existing cert Secret.
+//
+// reads names the Secrets/ConfigMaps this resolve authorized reads of; nil means the
+// session only tunnels and the agent needs no Kubernetes access.
+func (p *remoteAgentProvisioner) ensureAgent(ctx context.Context, dpClient client.Client, dpNamespace string, reads *agentReadSet) (*agentEndpointInfo, error) {
+	if p.cfg.EntrypointAddress == "" {
+		return nil, fmt.Errorf("remote_connect.entrypoint_address is not configured")
+	}
+	sni := p.agentSNI(dpNamespace)
+
+	certPEM, err := p.ensureCertSecret(ctx, dpClient, dpNamespace, sni)
+	if err != nil {
+		return nil, fmt.Errorf("ensure remote-agent cert: %w", err)
+	}
+	// RBAC before the Deployment: the pod must never come up able to serve a fetch it
+	// has no permission for, which would surface as a puzzling mid-session denial.
+	if err := p.ensureReadRBAC(ctx, dpClient, dpNamespace, reads); err != nil {
+		return nil, fmt.Errorf("ensure remote-agent read rbac: %w", err)
+	}
+	if err := p.applyDeployment(ctx, dpClient, dpNamespace, certPEM); err != nil {
+		return nil, fmt.Errorf("apply remote-agent deployment: %w", err)
+	}
+	if err := p.applyService(ctx, dpClient, dpNamespace, sni); err != nil {
+		return nil, fmt.Errorf("apply remote-agent service: %w", err)
+	}
+
+	// occ dials the shared router endpoint with this agent's SNI; the router does
+	// TLS-passthrough to this agent, which terminates TLS with the cert below.
+	return &agentEndpointInfo{endpoint: p.cfg.EntrypointAddress, caBundle: certPEM, serverName: sni}, nil
+}
+
+// ensureCertSecret returns the agent's cert, generating a self-signed cert/key pair
+// (SAN = sni) on first use and reusing the stored one until it nears expiry (so occ
+// pins a stable cert). Reissuing is safe: every resolve returns the current cert.
+func (p *remoteAgentProvisioner) ensureCertSecret(ctx context.Context, dpClient client.Client, ns, sni string) (string, error) {
+	secret := &corev1.Secret{}
+	getErr := dpClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: remoteAgentName}, secret)
+	if getErr == nil {
+		c, k := secret.Data[corev1.TLSCertKey], secret.Data[corev1.TLSPrivateKeyKey]
+		if p.certUsable(c, k, sni) {
+			return string(c), nil
+		}
+	} else if !apierrors.IsNotFound(getErr) {
+		return "", getErr
+	}
+
+	certPEM, keyPEM, err := generateSelfSignedCert(sni, p.now())
+	if err != nil {
+		return "", err
+	}
+	desired := &corev1.Secret{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
+		ObjectMeta: p.objectMeta(ns),
+		Type:       corev1.SecretTypeTLS,
+		Data: map[string][]byte{
+			corev1.TLSCertKey:       []byte(certPEM),
+			corev1.TLSPrivateKeyKey: []byte(keyPEM),
+		},
+	}
+
+	// Write with Create/Update rather than apply so concurrent resolves cannot each
+	// install a different cert: whoever loses the race adopts the stored one, so the
+	// cert occ pins is always the cert the agent pod mounts.
+	if apierrors.IsNotFound(getErr) {
+		if cerr := dpClient.Create(ctx, desired); cerr != nil {
+			if !apierrors.IsAlreadyExists(cerr) {
+				return "", cerr
+			}
+			return p.storedCert(ctx, dpClient, ns)
+		}
+		return certPEM, nil
+	}
+
+	desired.ResourceVersion = secret.ResourceVersion
+	if uerr := dpClient.Update(ctx, desired); uerr != nil {
+		if !apierrors.IsConflict(uerr) {
+			return "", uerr
+		}
+		return p.storedCert(ctx, dpClient, ns)
+	}
+	return certPEM, nil
+}
+
+// storedCert re-reads the cert another writer installed after we lost a write race.
+func (p *remoteAgentProvisioner) storedCert(ctx context.Context, dpClient client.Client, ns string) (string, error) {
+	secret := &corev1.Secret{}
+	if err := dpClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: remoteAgentName}, secret); err != nil {
+		return "", err
+	}
+	cert := secret.Data[corev1.TLSCertKey]
+	if len(cert) == 0 {
+		return "", fmt.Errorf("remote-agent cert secret in %s has no %s", ns, corev1.TLSCertKey)
+	}
+	return string(cert), nil
+}
+
+// mergeReadRole adds reads to the agent's Role, keeping the names already granted.
+//
+// Rules carries no listType marker, so a write replaces the whole rule set. The
+// read-modify-write therefore retries, re-reading and re-merging on each attempt rather
+// than reapplying a stale set. AlreadyExists is retried alongside Conflict: two resolves
+// racing the first create leave the loser holding a Role it has not merged into.
+func (p *remoteAgentProvisioner) mergeReadRole(ctx context.Context, dpClient client.Client, ns string, reads *agentReadSet) error {
+	retryable := func(err error) bool {
+		return apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err)
+	}
+	return retry.OnError(retry.DefaultRetry, retryable, func() error {
+		// Cloned per attempt: the merge appends and sorts, which would otherwise write
+		// through the caller's array and drop names from a retry.
+		secrets, configMaps := slices.Clone(reads.secrets), slices.Clone(reads.configMaps)
+
+		existing := &rbacv1.Role{}
+		getErr := dpClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: remoteAgentName}, existing)
+		if getErr != nil && client.IgnoreNotFound(getErr) != nil {
+			return fmt.Errorf("read existing role: %w", getErr)
+		}
+		if getErr == nil {
+			for _, rule := range existing.Rules {
+				for _, res := range rule.Resources {
+					for _, name := range rule.ResourceNames {
+						switch res {
+						case "secrets":
+							secrets = appendUnique(secrets, name)
+						case "configmaps":
+							configMaps = appendUnique(configMaps, name)
+						}
+					}
+				}
+			}
+		}
+
+		if len(secrets)+len(configMaps) > maxAgentReadNames {
+			return fmt.Errorf("remote-agent in %s would need read access to %d objects, over the %d limit",
+				ns, len(secrets)+len(configMaps), maxAgentReadNames)
+		}
+
+		// Sorted so an unchanged set produces a byte-identical Role and the write is a no-op.
+		slices.Sort(secrets)
+		slices.Sort(configMaps)
+
+		var rules []rbacv1.PolicyRule
+		if len(secrets) > 0 {
+			rules = append(rules, rbacv1.PolicyRule{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get"},
+				ResourceNames: secrets,
+			})
+		}
+		if len(configMaps) > 0 {
+			rules = append(rules, rbacv1.PolicyRule{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				Verbs:         []string{"get"},
+				ResourceNames: configMaps,
+			})
+		}
+
+		if getErr != nil {
+			role := &rbacv1.Role{ObjectMeta: p.objectMeta(ns), Rules: rules}
+			if err := dpClient.Create(ctx, role); err != nil {
+				return fmt.Errorf("create role: %w", err)
+			}
+			return nil
+		}
+
+		// Written through the read object, so its resourceVersion is the precondition.
+		existing.Rules = rules
+		if existing.Labels == nil {
+			existing.Labels = p.labelSet()
+		}
+		// Stamped on every merge; the reaper drops the Role once no read refreshes it.
+		if existing.Annotations == nil {
+			existing.Annotations = map[string]string{}
+		}
+		existing.Annotations[lastUsedAnnotation] = p.now().UTC().Format(time.RFC3339)
+		if err := dpClient.Update(ctx, existing); err != nil {
+			return fmt.Errorf("update role: %w", err)
+		}
+		return nil
+	})
+}
+
+// ensureReadRBAC applies the agent's ServiceAccount, and the Role/RoleBinding that let
+// it read exactly the objects reads names, and nothing else. The ServiceAccount is
+// applied whether or not there is anything to read: the Deployment names it.
+//
+// The Role is namespace-scoped and restricted with resourceNames. That restriction is
+// the containment: without it, `get` on secrets would cover every Secret in the
+// project+env namespace, which is far more than any one session needs. The rules
+// deliberately grant only `get` — resourceNames does not constrain `list` or `watch`, so
+// granting either would silently restore namespace-wide read.
+//
+// The name list is additive across the agent's life rather than replaced per resolve.
+// Replacing it would let a new session revoke a concurrent session's grant in the same
+// namespace, which the affected developer would see as a secret that mysteriously
+// stopped resolving. The Role is deleted with the agent, but any activity refreshes the
+// agent's liveness, so under continuous use the name list is not bounded by a session.
+func (p *remoteAgentProvisioner) ensureReadRBAC(ctx context.Context, dpClient client.Client, ns string, reads *agentReadSet) error {
+	sa := &corev1.ServiceAccount{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: p.objectMeta(ns),
+	}
+	if err := dpClient.Patch(ctx, sa, client.Apply, client.ForceOwnership, client.FieldOwner(remoteAgentFieldOwner)); err != nil {
+		return fmt.Errorf("apply service account: %w", err)
+	}
+
+	if reads.empty() {
+		// No Role needed. An existing one is left for concurrent sessions; the reaper
+		// removes it with the agent.
+		return nil
+	}
+
+	if err := p.mergeReadRole(ctx, dpClient, ns, reads); err != nil {
+		return err
+	}
+
+	binding := &rbacv1.RoleBinding{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
+		ObjectMeta: p.objectMeta(ns),
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Name:      remoteAgentName,
+			Namespace: ns,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     remoteAgentName,
+		},
+	}
+	if err := dpClient.Patch(ctx, binding, client.Apply, client.ForceOwnership, client.FieldOwner(remoteAgentFieldOwner)); err != nil {
+		return fmt.Errorf("apply role binding: %w", err)
+	}
+	return nil
+}
+
+func (p *remoteAgentProvisioner) applyDeployment(ctx context.Context, dpClient client.Client, ns string, certPEM string) error {
+	replicas := int32(1)
+	port := int32(p.cfg.AgentListenPort) //nolint:gosec // config-bounded port
+	labelSet := p.labelSet()
+
+	args := []string{
+		"--listen=:" + strconv.Itoa(p.cfg.AgentListenPort),
+		"--authorize-url=" + p.cfg.AuthorizeURL,
+		"--tls-cert=/certs/tls.crt",
+		"--tls-key=/certs/tls.key",
+	}
+	if p.cfg.AuthorizeInsecure {
+		args = append(args, "--authorize-insecure")
+	}
+	// The heartbeat endpoint shares the authorize URL's host; derive it by swapping the
+	// path. If the authorize URL isn't the standard path, heartbeats stay off (the agent
+	// warns) rather than pointing at the wrong endpoint.
+	if hb := strings.Replace(p.cfg.AuthorizeURL, remoteconnect.AuthorizePath, remoteconnect.HeartbeatPath, 1); hb != p.cfg.AuthorizeURL {
+		args = append(args, "--heartbeat-url="+hb)
+	}
+
+	dep := &appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: p.objectMeta(ns),
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": remoteAgentName}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labelSet,
+					// The agent loads its keypair at start-up and serves one wire-protocol
+					// version, so the pod must roll when either changes.
+					Annotations: map[string]string{
+						certAnnotation:     certFingerprint(certPEM),
+						protocolAnnotation: strconv.Itoa(remoteconnect.ProtocolVersion),
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:            "remote-agent",
+						Image:           p.cfg.AgentImage,
+						ImagePullPolicy: corev1.PullPolicy(p.cfg.AgentImagePullPolicy),
+						Args:            args,
+						// The agent sends its own namespace in heartbeats so the control
+						// plane refreshes the right agent.
+						Env: []corev1.EnvVar{{
+							Name: "POD_NAMESPACE",
+							ValueFrom: &corev1.EnvVarSource{
+								FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+							},
+						}},
+						Ports: []corev1.ContainerPort{{ContainerPort: port}},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      "certs",
+							MountPath: "/certs",
+							ReadOnly:  true,
+						}},
+						// The agent is a bare TCP listener with no HTTP surface, so
+						// readiness is "is the port accepting".
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(port)},
+							},
+							InitialDelaySeconds: 2,
+							PeriodSeconds:       10,
+						},
+						// Requests keep the agent schedulable under a namespace quota;
+						// tenant namespaces often carry a LimitRange that rejects pods
+						// without them.
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("50m"),
+								corev1.ResourceMemory: resource.MustParse("64Mi"),
+							},
+							Limits: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("200m"),
+								corev1.ResourceMemory: resource.MustParse("128Mi"),
+							},
+						},
+						SecurityContext: &corev1.SecurityContext{
+							AllowPrivilegeEscalation: ptr.To(false),
+							ReadOnlyRootFilesystem:   ptr.To(true),
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+						},
+					}},
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot:   ptr.To(true),
+						RunAsUser:      ptr.To(int64(1000)),
+						FSGroup:        ptr.To(int64(1000)),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					// The agent reads the Secrets/ConfigMaps a session's grants name, via
+					// a Role restricted to exactly those object names (ensureReadRBAC).
+					ServiceAccountName:           remoteAgentName,
+					AutomountServiceAccountToken: ptr.To(true),
+					Volumes: []corev1.Volume{{
+						Name:         "certs",
+						VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: remoteAgentName}},
+					}},
+				},
+			},
+		},
+	}
+	return dpClient.Patch(ctx, dep, client.Apply, client.ForceOwnership, client.FieldOwner(remoteAgentFieldOwner))
+}
+
+func (p *remoteAgentProvisioner) applyService(ctx context.Context, dpClient client.Client, ns, sni string) error {
+	port := int32(p.cfg.AgentListenPort) //nolint:gosec // config-bounded port
+	meta := p.objectMeta(ns)
+	// The shared SNI router discovers this agent by this annotation.
+	meta.Annotations[sniAnnotationKey] = sni
+	svc := &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: meta,
+		Spec: corev1.ServiceSpec{
+			// ClusterIP only: external reachability is the shared router's job, not a
+			// per-agent LoadBalancer/NodePort.
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{"app": remoteAgentName},
+			Ports: []corev1.ServicePort{{
+				Name:       "tunnel",
+				Port:       port,
+				TargetPort: intstr.FromInt32(port),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+	return dpClient.Patch(ctx, svc, client.Apply, client.ForceOwnership, client.FieldOwner(remoteAgentFieldOwner))
+}
+
+// touchLastUsed refreshes the remote-agent's last-used annotation so the reaper keeps it
+// alive while sessions are active. It is a merge patch (not server-side apply) so it
+// only updates the annotation and leaves the rest of the object untouched.
+func (p *remoteAgentProvisioner) touchLastUsed(ctx context.Context, dpClient client.Client, ns string, readsSecret bool) error {
+	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(
+		`{"metadata":{"annotations":{%q:%q}}}`,
+		lastUsedAnnotation, p.now().UTC().Format(time.RFC3339))))
+	dep := &appsv1.Deployment{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: metav1.ObjectMeta{Name: remoteAgentName, Namespace: ns},
+	}
+	if err := dpClient.Patch(ctx, dep, patch); err != nil {
+		return err
+	}
+	if !readsSecret {
+		// Only a read keeps the read Role alive.
+		return nil
+	}
+	role := &rbacv1.Role{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
+		ObjectMeta: metav1.ObjectMeta{Name: remoteAgentName, Namespace: ns},
+	}
+	return client.IgnoreNotFound(dpClient.Patch(ctx, role, patch))
+}
+
+func (p *remoteAgentProvisioner) objectMeta(ns string) metav1.ObjectMeta {
+	return metav1.ObjectMeta{
+		Name:        remoteAgentName,
+		Namespace:   ns,
+		Labels:      p.labelSet(),
+		Annotations: map[string]string{lastUsedAnnotation: p.now().UTC().Format(time.RFC3339)},
+	}
+}
+
+// labelSet is applied to all provisioned resources and pods. The system-component
+// label admits the agent through per-component NetworkPolicies to reach dependency
+// services in other namespaces.
+func (p *remoteAgentProvisioner) labelSet() map[string]string {
+	return map[string]string{
+		"app":                          remoteAgentName,
+		"app.kubernetes.io/managed-by": managedByLabelValue,
+		labels.LabelKeySystemComponent: remoteAgentName,
+	}
+}
+
+// generateSelfSignedCert produces a PEM cert/key pair with serverName as its SAN,
+// used by the remote-agent as its TLS server cert and pinned by occ.
+// certUsable reports whether a stored cert/key pair can still be served: the pair must
+// load together, carry sni as a SAN, and not be within certRenewBefore of expiry.
+// Anything else is reissued rather than surfaced as an error — a mismatched pair would
+// otherwise CrashLoopBackOff the agent on tls.LoadX509KeyPair with no way to recover.
+func (p *remoteAgentProvisioner) certUsable(certPEM, keyPEM []byte, sni string) bool {
+	if len(certPEM) == 0 || len(keyPEM) == 0 {
+		return false
+	}
+	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+		return false
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	if cert.VerifyHostname(sni) != nil {
+		return false
+	}
+	return p.now().Add(certRenewBefore).Before(cert.NotAfter)
+}
+
+func generateSelfSignedCert(serverName string, now time.Time) (certPEM, keyPEM string, err error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return "", "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: serverName},
+		DNSNames:              []string{serverName},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(certValidity),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		// Not a CA: occ pins this exact cert as its root, which Go accepts without IsCA.
+		IsCA: false,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return "", "", err
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return "", "", err
+	}
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	return certPEM, keyPEM, nil
+}
+
+// certFingerprint is a short digest of the agent's cert, used as a pod annotation so a
+// reissued cert rolls the Deployment.
+func certFingerprint(certPEM string) string {
+	sum := sha256.Sum256([]byte(certPEM))
+	return hex.EncodeToString(sum[:8])
+}
